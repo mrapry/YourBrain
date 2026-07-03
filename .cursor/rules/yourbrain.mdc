@@ -1,0 +1,64 @@
+---
+description: Use the YourBrain (yb) MCP memory tools to recall and persist durable project knowledge
+alwaysApply: true
+---
+
+# YourBrain Memory
+
+A persistent memory engine is available via the `yourbrain` MCP server. Use it
+proactively — do not wait to be asked.
+
+## Context-first policy — always check YourBrain first
+To avoid losing context across sessions, YourBrain is the FIRST place to look for
+context, not the last.
+
+- At the start of a task, and before any action that depends on prior context
+  (architecture, decisions, conventions, setup, past bugs, user preferences),
+  call `yb_recall` FIRST with a focused query.
+- Prefer routing every context lookup through `yb_recall` before falling back to
+  reading files, searching the codebase, or asking the user.
+- Use the returned memories as authoritative context and build on them.
+- ONLY if `yb_recall` returns nothing relevant (empty or off-topic) do you
+  proceed with your own actions (code search, file reads, questions). In that
+  case, once you discover the answer, persist it with `yb_remember` so the next
+  session does not have to rediscover it.
+- For a multi-step task, re-query `yb_recall` when the subtopic shifts.
+
+## Remember aggressively
+Persist knowledge eagerly — it is SAFE because the engine deduplicates and
+conflict-checks every write. Call `yb_remember` whenever the user states or
+confirms anything that could matter later: decisions, facts, conventions,
+preferences, constraints, environment/config details, or a solved bug.
+
+- When unsure whether it is worth storing, store it — an exact duplicate is
+  auto-discarded, so there is no downside.
+- One memory = one clear, self-contained sentence.
+- Never store secrets/credentials or transient chit-chat.
+
+## Handle conflicts (when the engine asks for a decision)
+Most writes just succeed. Some auto-resolve silently (exact duplicate → skipped;
+same-author high-confidence update → replaced). But if `yb_remember` returns
+`"status":"conflict"`, the engine needs a human decision — do NOT force it.
+
+Present it to the user clearly and compactly:
+
+```
+Konflik terdeteksi (relation: <relation>, confidence: <n>%)
+- SEBELUMNYA: "<existing.content>"  (oleh <existing.author>)
+- SEKARANG  : "<the text you just tried to store>"
+Pilih: replace (baru gantikan lama) · keep_both · discard_new (pakai lama) · merge
+```
+
+Recommend a sensible default based on the relation, then wait for the user:
+- `supersede` → suggest **replace**
+- `contradicts` → no default; ask the user to pick (never auto)
+- `duplicate` → suggest **discard_new**
+
+After the user decides, call `yb_resolve` with the `conflict_id` and the chosen
+action (`replace` | `keep_both` | `discard_new` | `merge`; `merge` also needs
+`merged_content`).
+
+## Other tools
+- `yb_get_full` — full content of specific ids after `yb_recall`.
+- `yb_endorse` / `yb_dispute` — confirm or flag a memory's validity.
+- `yb_timeline` — a memory's audit history. `yb_stats` — counts and health.

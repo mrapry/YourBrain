@@ -1,0 +1,5 @@
+# YourBrain memory
+Before answering questions about this project, call the `yb_recall` tool with a
+relevant query to load prior context. When the user establishes a durable fact,
+decision, or preference, call `yb_remember` to persist it. If `yb_remember`
+returns a conflict, present the options to the user and call `yb_resolve`.

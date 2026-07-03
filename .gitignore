@@ -1,0 +1,18 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+
+# Local brain data (never commit personal memories)
+*.db
+*.db-wal
+*.db-shm
+*.ybv
+/.yourbrain/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+
+# Machine-specific IDE integration (absolute binary paths; regenerate with `yb install`)
+.cursor/mcp.json
+.mcp.json

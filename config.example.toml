@@ -1,0 +1,61 @@
+# YourBrain configuration example.
+# Copy to your data directory as `config.toml`:
+#   Windows : %APPDATA%\yourbrain\config.toml
+#   Linux   : ~/.yourbrain/config.toml
+#   macOS   : ~/.yourbrain/config.toml
+# Every field is optional; omitted fields fall back to the defaults shown here.
+
+[general]
+author = "me"              # attributed as the memory author
+default_room = "auto"      # room auto-detection (see ADR-12)
+default_scope = "personal" # personal | team
+language = "auto"
+
+[storage]
+data_dir = "~/.yourbrain"
+backup_enabled = true
+max_backups = 7
+
+[embedding]
+# Default is the dependency-free deterministic embedder (no ONNX toolchain
+# required). "onnx" / "ollama" / "openai" backends are planned behind feature
+# flags. The dimension is LOCKED into the database on first use (ADR-5).
+provider = "local"
+model = "hash-bow-v1"
+dimension = 256
+
+[search]
+default_limit = 5
+min_confidence = 0.3
+include_archived = false
+rrf_k = 60.0               # Reciprocal Rank Fusion constant
+
+[recall]
+max_tokens = 200          # token budget injected into AI context
+default_detail = "summary" # headline | summary | full
+
+[conflict]
+enabled = true
+judge_tier = "auto"        # auto | rules | bundled | llm (ADR-3)
+# Candidate similarity threshold. Tuned for the default hash embedder; raise to
+# ~0.75 when using a real sentence-transformer via the ONNX backend.
+similarity_threshold = 0.45
+auto_supersede_threshold = 0.92
+auto_duplicate_threshold = 0.95
+auto_complement_threshold = 0.80
+conflict_expiry_secs = 300 # pending conflicts auto-expire after this
+candidate_top_k = 5
+
+[compression]
+intensity = "full"         # lite | full | ultra
+preserve_code = true
+preserve_paths = true
+preserve_urls = true
+
+[privacy]
+redact_secrets = true
+exclude_patterns = ["**/.env", "**/.env.*", "**/secrets/**", "**/*.pem", "**/*.key"]
+
+[daemon]
+idle_shutdown_secs = 600
+embed_batch_size = 10
