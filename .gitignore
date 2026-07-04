@@ -16,3 +16,8 @@ Thumbs.db
 # Machine-specific IDE integration (absolute binary paths; regenerate with `yb install`)
 .cursor/mcp.json
 .mcp.json
+
+# Internal docs (not published)
+docs/PANDUAN.md
+docs/TEKNIS.md
+PLAN.md

@@ -1,48 +1,112 @@
 # YourBrain (`yb`)
 
-**An AI memory engine with first-class conflict resolution.** YourBrain gives
-AI coding assistants a persistent, personal/team memory that stays *coherent*
-over time: when new knowledge contradicts or supersedes what was stored before,
-YourBrain detects it and resolves it — instead of silently accumulating stale,
-conflicting facts.
+**A local-first memory engine that gives AI coding agents a persistent, coherent long-term memory — with first-class conflict resolution.**
 
-It ships as a **single Rust binary** (`yb`) with **zero external
-infrastructure**: no server to run, no database to provision, no cloud
-dependency. Everything is local by default.
+![Rust](https://img.shields.io/badge/Rust-1.75%2B-orange?logo=rust&logoColor=white)
+![License](https://img.shields.io/badge/License-Apache--2.0-blue)
+![Local-first](https://img.shields.io/badge/Local--first-no%20cloud%2C%20no%20server-2ea44f)
+![Single binary](https://img.shields.io/badge/Ships%20as-one%20binary-informational)
+![MCP](https://img.shields.io/badge/MCP-Cursor%20%C2%B7%20Claude%20%C2%B7%20VS%20Code%20%C2%B7%20Trae-8A2BE2)
+
+YourBrain is a single Rust binary (`yb`) that plugs into any MCP-capable AI IDE
+and remembers what matters across sessions — decisions, conventions, gotchas,
+your preferences — and **keeps that memory coherent** as it grows. No server to
+run, no database to provision, no cloud dependency. Everything is local by
+default.
 
 ---
 
-## Why YourBrain?
+## The problem: agentic AI has amnesia
 
-Most "AI memory" tools are append-only vector stores. They answer *"what did I
-say about X?"* but they never notice when *"we use Postgres"* is later
-contradicted by *"we migrated to MySQL"*. Over months, the memory becomes a pile
-of half-truths.
+Today's AI coding agents are brilliant but **stateless**. Every new chat starts
+from zero:
 
-YourBrain's differentiator is the **conflict engine**:
+- **They forget.** Architecture decisions, naming conventions, that bug you
+  fixed last week, the fact that you migrated off Postgres — gone the moment the
+  session ends. You re-explain the same context over and over.
+- **They waste tokens and time.** Re-pasting context into every prompt burns
+  tokens (and money), and slows you down.
+- **They hallucinate and contradict.** With no grounded memory, agents confidently
+  state things that were true three refactors ago — or never true at all.
+- **"Memory" tools just pile up.** Most add-on memory is an append-only vector
+  store. It can tell you *"what did I say about X?"* but never notices when
+  *"we use JWT"* is later replaced by *"we moved to session cookies."* Over
+  months the memory rots into a pile of conflicting half-truths.
 
-- Detects **duplicates**, **supersessions**, and **contradictions** on write.
-- Auto-resolves the safe cases; asks a human (or the AI) for the ambiguous ones.
-- Keeps an **audit timeline** and **relationship graph** (`supersedes`,
+MCP gave agents *tools*. It did not give them a **coherent long-term memory**.
+
+## What YourBrain does — and why it matters
+
+YourBrain is the memory layer. Your agent calls it before answering and after
+learning something durable.
+
+| Without YourBrain | With YourBrain |
+|---|---|
+| Re-explain context every session | Agent recalls prior decisions instantly |
+| Memory silently goes stale | Conflicts are **detected and resolved** on write |
+| Big prompts, high token cost | Token-budgeted, compressed recall |
+| Confident hallucinations | Answers **fact-checked** against your knowledge base |
+| Repeated Q&A recomputed | **Semantic cache** reuses grounded answers |
+| Cloud lock-in, privacy risk | 100% local, single binary, your data stays put |
+
+**The differentiator is the conflict engine.** When new knowledge duplicates,
+supersedes, or contradicts what was stored before, YourBrain:
+
+- detects it on write (duplicate / supersede / contradiction),
+- auto-resolves the safe cases and asks a human for the ambiguous ones,
+- keeps an **audit timeline** and a **relationship graph** (`supersedes`,
   `contradicts`, `complements`, …) so history is never lost.
 
 ## Features
 
-| Capability | Description |
+| Capability | What it gives you |
 |---|---|
-| Conflict resolution | Rule-based tier that flags duplicate/supersede/contradiction, with auto-resolution thresholds. Pluggable higher tiers (NLI / LLM) via a trait. |
-| Hybrid search | SQLite **FTS5** keyword search fused with **vector** similarity via Reciprocal Rank Fusion, then re-ranked by recency/importance/confidence. |
-| Compression | Rule-based, near-lossless compression that **preserves code, paths, and URLs**, plus lossy `summary`/`headline` levels for token-efficient recall. |
-| Token budgeting | Recall fits within a configurable token budget, giving the top hits more detail and the rest a headline. |
-| Reranking | A lexical (BM25) rerank stage sharpens query relevance on top of the RRF fusion. Pluggable via a `Reranker` trait. |
-| Dynamic budgeting | Opt-in query-aware extractive summarization condenses recalled memories to fit tighter budgets (`Summarizer` trait). |
-| Guardrail | `yb validate` fact-checks a drafted answer against the knowledge base and flags unsupported claims (`Validator` trait). |
-| Semantic cache | A layered cache grounded in the knowledge base: prior Q&A, direct KB answers, or KB grounding — with provenance-based auto-invalidation. |
-| Privacy | Strips `<private>…</private>` blocks and redacts secrets (API keys, tokens, connection strings) before anything is stored. |
-| Team knowledge | Endorse / dispute memories; confidence is a consensus score. Export/import as JSONL. |
-| IDE integration | An **MCP server** (`yb mcp`) for Cursor / Claude Code, plus **hooks** (`yb hook`) for auto-capture. |
+| **Conflict resolution** | Rule-based detection of duplicate/supersede/contradiction with auto-resolution thresholds. Higher tiers (NLI / LLM) are pluggable via a trait. |
+| **Hybrid search** | SQLite **FTS5** keyword search fused with **vector** similarity (Reciprocal Rank Fusion), re-ranked by recency/importance/confidence. |
+| **Lexical reranking** | A BM25 rerank stage sharpens query relevance on top of RRF fusion (`Reranker` trait). |
+| **Compression** | Near-lossless compression that **preserves code, paths, and URLs**, plus `summary`/`headline` levels for token-efficient recall. |
+| **Dynamic token budgeting** | Opt-in query-aware extractive summarization condenses recall to fit tight budgets (`Summarizer` trait). |
+| **Guardrail / fact-check** | `yb validate` checks a drafted answer against the knowledge base and flags unsupported claims (`Validator` trait). |
+| **Semantic cache** | Layered cache grounded in the KB: prior Q&A → direct KB answer → KB grounding, with provenance-based **auto-invalidation**. |
+| **Semantic embeddings** | Dependency-free hash embedder by default; optional **ONNX sentence-transformers** (e5/MiniLM/BGE) for true meaning-based recall. |
+| **Privacy** | Strips `<private>…</private>` blocks and redacts secrets (API keys, tokens, connection strings) before storing. |
+| **Team knowledge** | Endorse / dispute memories (confidence = consensus). Export/import as JSONL. |
+| **IDE integration** | An **MCP server** (`yb mcp`) for Cursor, Claude Code, VS Code, and Trae, plus **hooks** (`yb hook`) for auto-capture. |
 
-## Architecture at a glance
+## How YourBrain compares
+
+The local-first agent-memory space is healthy and growing — projects like
+[uteke](https://github.com/codecoradev/uteke) and
+[cavemem](https://github.com/JuliusBrussee/cavemem) share the same "single
+binary, offline, MCP" philosophy, and are excellent at *storing and retrieving*
+memory. YourBrain's focus is one layer up: keeping that memory **coherent and
+trustworthy** as it grows.
+
+| | **YourBrain** | uteke | cavemem | Mem0 |
+|---|---|---|---|---|
+| Distribution | Single Rust binary | Single Rust binary (+Docker) | npm / Node (TS) | Python/JS SDK + SaaS |
+| Offline / local-first | Yes | Yes | Yes | Partial (cloud embedding) |
+| MCP server | Yes — stdio, 12 tools | Yes — stdio + HTTP | Yes — stdio, 3 tools | Via integrations |
+| Hybrid search (FTS5 + vector + RRF) | Yes (flat cosine) | Yes (HNSW) | Yes | Semantic |
+| Default embeddings | Hash; ONNX optional | ONNX (EmbeddingGemma 768d) | Remote optional | LLM / cloud |
+| BM25 rerank + dynamic token budget | Yes | Decay/salience ranking | Tunable ranker | — |
+| Code-safe compression | Yes (3 levels) | — | Yes (~75%) | — |
+| **Automatic conflict detection + resolution** | **Yes** (duplicate/supersede/contradiction, auto or ask) | Typed edges (manual) | No (append-only) | Limited dedup/update |
+| **Answer fact-check / guardrail** | **Yes** (`yb_validate`) | No | No | No |
+| **KB-grounded semantic answer cache** | **Yes** (tiered + provenance auto-invalidation) | LRU recall cache (perf) | No | No |
+| **Team consensus** (endorse/dispute) | **Yes** (Laplace confidence, scope) | Author attribution / namespaces | No | Per-user |
+| Relationship graph + audit timeline | Yes | Yes (rich; Graph API) | Timeline | Limited |
+| Server/daemon + HTTP, document engine | Roadmap | Yes | Web viewer | Cloud platform |
+| License | Apache-2.0 | Apache-2.0 | MIT | Apache-2.0 |
+
+**Honest take:** uteke ships more breadth today (HNSW, ONNX by default, server
+mode, a document/wiki engine, benchmark harness); cavemem has a slick web viewer
+and the widest one-command IDE installers. **What is unique to YourBrain** is the
+*coherence layer* — automatic conflict resolution, answer validation against the
+knowledge base, and a KB-grounded semantic cache — so your agent's memory does
+not quietly rot into contradictions over time.
+
+## How it works
 
 ```
                  ┌─────────────────────────────────────────┐
@@ -52,72 +116,60 @@ YourBrain's differentiator is the **conflict engine**:
                  │   ├── compress (3 levels)                 │
                  │   ├── embed  (Embedder trait)  ──┐        │
                  │   ├── vector (VectorIndex trait) │ pluggable
-                 │   ├── search (FTS5 + RRF)        │ backends │
+                 │   ├── search (FTS5 + RRF + rerank)│ backends │
+                 │   ├── budget / guardrail / cache │         │
                  │   ├── conflict (tiered)          │         │
                  │   └── store  (SQLite + FTS5)  ◀──┘         │
                  └─────────────────────────────────────────┘
 ```
 
-The engine depends only on the [`Embedder`] and [`VectorIndex`] **traits**. The
+The engine depends only on the `Embedder` and `VectorIndex` **traits**. The
 default build uses pure-Rust implementations (a deterministic feature-hashing
-embedder and an exact flat cosine index) so it **compiles and runs anywhere**
-with no C++/ONNX toolchain. Production ONNX embeddings and a HNSW index can be
-dropped in behind the same traits — see [`docs/TEKNIS.md`](docs/TEKNIS.md).
-
-## Install / Build
-
-Prerequisites: a Rust toolchain (1.75+) and a C compiler (bundled SQLite is
-compiled from source; on Windows the MSVC Build Tools are used).
-
-```bash
-git clone <repo-url> yourbrain
-cd yourbrain
-cargo build --release
-# binary at ./target/release/yb  (yb.exe on Windows)
-```
-
-Run the tests:
-
-```bash
-cargo test --all
-cargo clippy --all-targets -- -D warnings
-```
+embedder and an exact flat-cosine index) so it **compiles and runs anywhere**
+with no C++/ONNX toolchain. Production ONNX embeddings drop in behind the same
+trait — see [Installation](docs/INSTALL.md).
 
 ## Quick start
 
 ```bash
-# Store some knowledge
+# 1. Build (needs a Rust toolchain 1.75+)
+git clone <repo-url> yourbrain && cd yourbrain
+cargo build --release            # binary at ./target/release/yb (yb.exe on Windows)
+
+# 2. Store and recall knowledge
 yb remember "Backend API uses Rust with the Axum web framework" --tag backend
-yb remember "Auth uses JWT tokens stored in Redis with 15min expiry" --tag auth
+yb recall  "how is the backend built"
 
-# Recall (token-budgeted, compressed)
-yb recall "how does authentication work"
-
-# Update knowledge → conflict detected
-yb remember "Auth now migrates to session cookies instead of JWT"
+# 3. Update knowledge → conflict detected → resolve
+yb remember "Auth now moved to session cookies instead of JWT"
 #  ↳ POTENTIAL SUPERSEDE DETECTED … resolve with:
 yb resolve <conflict_id> --action replace
 
-# Inspect
-yb list
-yb stats
-yb get <id>
-yb timeline <id>
-```
-
-## IDE integration
-
-```bash
-# Cursor (MCP-based recall/remember)
+# 4. Wire it into your IDE (Cursor shown; see docs for Claude/VS Code/Trae)
 yb install --ide cursor
-
-# Claude Code (MCP + auto-capture hooks)
-yb install --ide claude-code
 ```
 
-This writes `.cursor/mcp.json` / `.mcp.json` / `.claude/settings.json` pointing
-at the current `yb` binary. See the
-[usage guide](docs/PANDUAN.md) for details.
+Full, OS-by-OS build and run instructions: **[docs/INSTALL.md](docs/INSTALL.md)**.
+
+## Use it in your AI IDE
+
+YourBrain speaks the **Model Context Protocol (MCP)**, so it works with any
+MCP-capable client. `yb install` generates the config for Cursor and Claude
+Code automatically; VS Code and Trae take a one-file config.
+
+| IDE | Setup | Auto-capture hooks |
+|---|---|---|
+| **Cursor** | `yb install --ide cursor` | — (MCP only) |
+| **Claude Code** | `yb install --ide claude-code` | yes |
+| **VS Code** (Copilot Agent) | `.vscode/mcp.json` (manual) | — |
+| **Trae** | Settings → MCP → Add, or `.trae/mcp.json` | — |
+
+Step-by-step for every IDE, plus per-project tuning:
+**[docs/IDE_SETUP.md](docs/IDE_SETUP.md)**.
+
+Once connected, the agent gets these tools: `yb_remember`, `yb_recall`,
+`yb_resolve`, `yb_endorse`, `yb_dispute`, `yb_timeline`, `yb_get_full`,
+`yb_stats`, `yb_validate`, `yb_cache_get`, `yb_cache_put`, `yb_cache_clear`.
 
 ## Command reference
 
@@ -127,7 +179,7 @@ at the current `yb` binary. See the
 | `yb recall <query> [--limit N] [--detail headline\|summary\|full] [--budget N] [--dynamic-budget]` | Search & retrieve. |
 | `yb resolve <id> --action replace\|keep_both\|discard_new\|merge [--content …]` | Resolve a conflict. |
 | `yb validate <answer> [--query Q]` | Fact-check an answer against the knowledge base. |
-| `yb cache get\|put\|clear [--query Q] [--answer A] [--threshold F] [--source-id ID]…` | Layered semantic cache (`--threshold` overrides Tier-1 similarity). |
+| `yb cache get\|put\|clear [--query Q] [--answer A] [--threshold F] [--source-id ID]…` | Layered semantic cache. |
 | `yb list [--room R] [--limit N]` | List memories. |
 | `yb get <id>` | Show full memory + relations. |
 | `yb forget <id>` | Archive a memory. |
@@ -136,239 +188,117 @@ at the current `yb` binary. See the
 | `yb timeline <id>` | Audit history. |
 | `yb stats` | Statistics & health. |
 | `yb export [--scope team] [--out file]` / `yb import <file>` | JSONL export/import. |
-| `yb reindex [--provider onnx] [--model KEY] [--cache-dir DIR] [--yes]` | Re-embed all memories & rebuild the vector index (migrate embedder). |
+| `yb reindex [--provider onnx] [--model KEY] [--yes]` | Re-embed all memories & rebuild the index (migrate embedder). |
 | `yb config show` | Show config & paths. |
-| `yb mcp [--dynamic-budget true\|false] [--budget N] [--cache-* F] [--embedder local\|onnx] [--embed-model KEY] [--conflict-similarity F]` | Start the MCP stdio server (per-project budget, cache/conflict thresholds & embedder defaults). |
-| `yb hook <event>` | Handle an IDE hook (reads JSON from stdin). |
-| `yb install --ide cursor\|claude-code [--dynamic-budget] [--budget N] [--cache-* F] [--embedder onnx] [--embed-model KEY] [--conflict-similarity F]` | Generate IDE integration files. |
+| `yb mcp [flags]` | Start the MCP stdio server (see IDE setup for per-project flags). |
+| `yb install --ide cursor\|claude-code [flags]` | Generate IDE integration files. |
+
+Global options (any command): `--db-memory <name>` (isolate a project),
+`--embedder <local\|onnx>` and `--embed-model <key>` (target a reindexed database).
 
 ## Configuration
 
-Config lives at `<data_dir>/config.toml`. Data directory resolution:
+Config lives at `<data_dir>/config.toml`. The data directory is resolved as:
 
-- `YB_DATA_DIR` environment variable (overrides all), else
-- Windows: `%APPDATA%\yourbrain`, else `~/.yourbrain`.
+- `YB_DATA_DIR` environment variable (overrides everything), else
+- Windows `%APPDATA%\yourbrain`, otherwise `~/.yourbrain`.
 
-See [`config.example.toml`](config.example.toml) for every option.
+Every option is documented in **[config.example.toml](config.example.toml)**.
+Key tunables: retrieval (`[search]`, `[rerank]`), token budget
+(`[token_budget]`), fact-check (`[guardrail]`), semantic cache (`[cache]`),
+conflict sensitivity (`[conflict]`), and embeddings (`[embedding]`).
 
-### Isolating memories per project (`--db-memory`)
+### Isolate memories per project
 
-By default every project shares one global database. To keep a project's
-memories isolated, pass a named `db_memory`:
+By default every project shares one global database. Pass a named `db_memory`
+to keep a project's memories fully isolated (separate SQLite store, indexes, and
+conflict scope):
 
 ```bash
 yb --db-memory my-project remember "Project-specific decision"
-yb --db-memory my-project recall "decisions"
+yb --db-memory my-project recall  "decisions"
 ```
 
-Named databases live in an isolated `dbs/<name>/` subfolder of the data dir, so
-their SQLite store, FTS index, vector index, and conflict scope are fully
-separate. Omitting `--db-memory` uses the shared/global database. The shared
-`config.toml` applies to all databases.
+`yb install` auto-detects the project (git repo folder) and writes
+`--db-memory <name>` into the generated MCP config. See
+[docs/IDE_SETUP.md](docs/IDE_SETUP.md#per-project-settings) for per-project token
+budget, cache thresholds, conflict sensitivity, and embedder selection.
 
-For IDE integration this is wired through the MCP server config (see below):
-`yb install --ide cursor` auto-detects the project name (git repo folder) and
-writes `--db-memory <name>` into the generated config. Individual MCP tool calls
-may also override it with their own `db_memory` argument.
+### Semantic understanding (optional ONNX)
 
-## Retrieval, guardrail & cache (v0.2)
-
-These capabilities are pure-Rust and embedder-independent, each behind a trait
-so an LLM/ONNX backend can be dropped in later. Behavior is controlled by config
-so it can be toggled without a rebuild.
-
-- **Reranker** (`[rerank]`, on by default). After RRF fusion, a BM25-style
-  lexical rerank reorders the candidate pool for tighter query relevance. Set
-  `[rerank] enabled = false` to restore the exact v0.1.0 ordering.
-- **Dynamic token budgeter** (`[token_budget]`, off by default). When enabled —
-  via config, the `--dynamic-budget` flag, or the `dynamic_budget` MCP argument —
-  recalled memories are condensed with a query-aware extractive summarizer so
-  more relevant signal fits into a tight budget.
-- **Guardrail** (`yb validate` / `yb_validate`). Checks each claim in a drafted
-  answer against the knowledge base and reports unsupported claims, to catch
-  hallucinations before an answer is presented.
-- **Semantic cache** (`yb cache` / `yb_cache_*`, `[cache]`). A layered lookup:
-  1. Tier 1 — a previously cached Q&A answer (query-embedding match).
-  2. Tier 2 — a direct answer from strongly-matching KB documents.
-  3. Tier 3 — moderately-matching KB documents returned as grounding context.
-
-  Cache entries record the `source_ids` of the memories that grounded them and
-  are **auto-invalidated** when a source memory is superseded, forgotten, or
-  disputed — so the cache never serves an answer that the knowledge base has
-  moved on from.
-
-The MCP server exposes four new tools alongside the originals: `yb_validate`,
-`yb_cache_get`, `yb_cache_put`, and `yb_cache_clear`. The generated `.cursorrules`
-guides the assistant to consult the cache first and validate important answers.
-
-### Per-project token budget
-
-Because each project has its own `.cursor/mcp.json` (with its own `--db-memory`),
-the dynamic token budgeter can be enabled/disabled **per project** by launching
-the server with a flag — no editing of the shared `config.toml` required:
-
-```bash
-# Pin this project's server to always condense recall to ~300 tokens:
-yb install --ide cursor --dynamic-budget --budget 300
-# → writes: "args": ["mcp", "--db-memory", "<project>", "--dynamic-budget", "true", "--budget", "300"]
-```
-
-Precedence (highest wins): per-call `dynamic_budget` / `max_tokens` argument on
-`yb_recall` → server flag in this project's `mcp.json` → `[token_budget]` /
-`[recall]` in the shared `config.toml`.
-
-### Per-project cache thresholds (tuning knobs)
-
-The semantic cache thresholds in `[cache]` are only **defaults**. When researching
-retrieval quality you often need to sweep them without editing the shared config
-or restarting anything. Two override levels are available:
-
-```bash
-# Per-project default, written into this project's mcp.json:
-yb install --ide cursor --cache-similarity 0.6 --cache-kb-direct 0.75 --cache-kb-grounding 0.4
-# → args: ["mcp", "--db-memory", "<project>", "--cache-similarity", "0.6", …]
-```
-
-For **live tuning** (no restart), pass the thresholds per call — via the
-`yb_cache_get` arguments `similarity_threshold` / `kb_direct_threshold` /
-`kb_grounding_threshold`, or `yb cache get --query … --threshold 0.6`.
-
-Precedence (highest wins): per-call argument → server flag in `mcp.json` →
-`[cache]` in `config.toml`.
-
-## ONNX embedder (proper semantic understanding)
-
-The default embedder (`hash-bow-v1`) is dependency-free but only matches on
-shared vocabulary — paraphrases with no common words score ~0. For real semantic
-understanding, YourBrain ships an optional ONNX [sentence-transformer](https://www.sbert.net/)
-backend powered by [`fastembed`](https://github.com/anush008/fastembed-rs)
-(tokenizer + pooling + L2 normalization included). It is behind the `onnx` cargo
-feature so default builds stay lean and portable.
-
-**Build with the feature:**
+The default embedder is dependency-free but matches mostly on shared vocabulary.
+For true meaning-based recall (paraphrases with no common words), build with the
+optional ONNX sentence-transformer backend and migrate:
 
 ```bash
 cargo build --release --features onnx
-```
-
-> **Windows build note.** The default release profile uses aggressive `lto`
-> (`Cargo.toml` sets `lto = "thin"`), which can crash the `rustc` code generator
-> (`STATUS_ACCESS_VIOLATION`, exit `0xc0000005`) while compiling the large ONNX
-> dependency graph (`ort` / `onnxruntime`). If that happens, disable LTO for the
-> ONNX build — the binary stays optimized:
->
-> ```powershell
-> # PowerShell (Windows)
-> $env:CARGO_PROFILE_RELEASE_LTO="off"
-> $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS="16"
-> cargo build --release --features onnx
-> ```
->
-> ```bash
-> # bash (Linux/macOS)
-> CARGO_PROFILE_RELEASE_LTO=off CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
->   cargo build --release --features onnx
-> ```
->
-> The resulting `target/release/yb.exe` is the ONNX-enabled binary; point
-> `.cursor/mcp.json`'s `command` at it (this is what `yb install` writes when run
-> from that binary). The ONNX runtime library is loaded from `ort`'s own cache,
-> so the binary runs from any working directory.
-
-The model downloads from HuggingFace on first use and is cached on disk.
-Supported model keys: `multilingual-e5-small` (384d, multilingual — good for
-mixed EN/ID), `multilingual-e5-base` (768d), `all-minilm-l6-v2` (384d),
-`bge-small-en-v1.5` (384d), `paraphrase-multilingual-minilm-l12-v2` (384d).
-E5 models get the `query:` / `passage:` instruction prefixes automatically.
-
-**Migrate an existing database.** The vector dimension is locked at creation
-(ADR-5), so switching models requires re-embedding. Stop the MCP server, then:
-
-```bash
-# Dry-run preview first (omit --yes):
 yb reindex --provider onnx --model multilingual-e5-small --yes
 ```
 
-`reindex` re-embeds every memory, rebuilds the vector index, clears the semantic
-cache (its query vectors belong to the old space), and moves the ADR-5 lock to
-the new model.
+Full details, supported models, and the Windows build note are in
+**[docs/INSTALL.md](docs/INSTALL.md#optional-onnx-embedder)**.
 
-**Point the MCP server at the ONNX backend (per project via `mcp.json`):**
+## Team collaboration
 
-```bash
-yb install --ide cursor --embedder onnx --embed-model multilingual-e5-small
-# → args: ["mcp", "--db-memory", "<project>", "--embedder", "onnx", "--embed-model", "multilingual-e5-small"]
-```
+Memory is more valuable when a whole team shares it. YourBrain is built so a team
+converges on **one coherent source of truth** instead of many drifting private
+notes:
 
-You can also set `[embedding] provider = "onnx"` in `config.toml` to make it the
-global default. Precedence: `mcp.json` server flags → `config.toml`.
+- **Scopes** — `yb remember "<fact>" --scope team` marks a memory as shared;
+  `--scope personal` (the default) keeps it author-private. Only team-scoped
+  memories are meant to travel between people.
+- **Consensus, not just storage** — anyone can `yb endorse <id>` or
+  `yb dispute <id>`. Confidence is computed as a Laplace-smoothed ratio
+  `(endorsements + 1) / (endorsements + disputes + 2)`, so widely-endorsed facts
+  rise and contested ones fall (and can flip to a `Disputed` state) — no single
+  author's claim wins by default.
+- **Author-aware conflict resolution** — when a new memory *supersedes* an
+  existing one written by **a different author**, YourBrain **always asks for a
+  human decision** rather than silently overwriting a teammate's knowledge.
+  Same-author updates can auto-resolve.
+- **Share via JSONL or git** — `yb export --scope team --out team.jsonl` then
+  `yb import team.jsonl` on another machine; or commit a project's isolated
+  `--db-memory <name>` database into your repo so everyone loads the same context.
 
-Direct CLI access to a database that was reindexed to ONNX needs the same
-embedder flags (they are global options on every subcommand):
+**Why it matters:** new teammates inherit architecture and decisions instantly,
+changed decisions are recorded on the timeline instead of lost, and important
+claims can be checked with `yb_validate` before an agent acts on them.
 
-```bash
-yb --db-memory <project> --embedder onnx --embed-model multilingual-e5-small recall "…"
-```
-
-**Tune the conflict threshold for ONNX.** `[conflict] similarity_threshold`
-defaults to `0.45`, tuned for the hash embedder's compressed similarity scale.
-Real sentence-transformers produce higher, better-separated cosine scores, so
-raise it to about `0.75`. Set it globally in `config.toml`:
-
-```toml
-[conflict]
-similarity_threshold = 0.75
-```
-
-…or per project (server) via `mcp.json`, mirroring the cache flags:
-
-```bash
-yb install --ide cursor --embedder onnx --embed-model multilingual-e5-small \
-  --conflict-similarity 0.75
-```
-
-Precedence: `mcp.json` `--conflict-similarity` → `[conflict]` in `config.toml`.
-
-### Testing the ONNX embedder
-
-The automated suite (`cargo test --all`) uses the deterministic hash embedder, so
-it needs no network or model download. `cargo test --features onnx` compiles the
-ONNX code path but the tests still run on the hash embedder. Verify the ONNX
-backend itself manually — the sharpest check is a **paraphrase recall** that
-shares no vocabulary with the stored memory (which the hash embedder cannot
-match). Use a throwaway database to A/B the two backends:
-
-```bash
-export YB_DATA_DIR=/tmp/yb-onnx-test        # PowerShell: $env:YB_DATA_DIR="$env:TEMP\yb-onnx-test"
-
-yb remember "Backend uses Rust with the Axum web framework"
-yb recall "what language and library power the server"        # hash: weak/miss
-
-yb reindex --provider onnx --model multilingual-e5-small --yes
-yb --embedder onnx --embed-model multilingual-e5-small \
-   recall "what language and library power the server"        # onnx: strong semantic match
-```
-
-Inside Cursor, reload the `yourbrain` MCP server after changing `mcp.json`, then
-ask a paraphrased question and confirm `yb_recall` still returns the right
-memory. `yb stats` (with the matching `--embedder` flags) reports the active
-model and dimension, e.g. `multilingual-e5-small (384d)`.
+> Real-time multi-user sync (git/relay) is on the roadmap; the foundations —
+> `brain_meta`, JSONL export/import, and `Scope` — are already in place.
 
 ## Documentation
 
-- [`docs/TEKNIS.md`](docs/TEKNIS.md) — technical documentation (Bahasa Indonesia) for engineers continuing the project.
-- [`docs/PANDUAN.md`](docs/PANDUAN.md) — usage guide (Bahasa Indonesia).
-- [`PLAN.md`](PLAN.md) — the full product/architecture plan, including the ADRs.
+| Doc | What's inside |
+|---|---|
+| [docs/INSTALL.md](docs/INSTALL.md) | Build & run on Windows, macOS, Linux; ONNX build; updating. |
+| [docs/IDE_SETUP.md](docs/IDE_SETUP.md) | Cursor, Claude Code, VS Code, Trae — config + per-project tuning. |
+| [config.example.toml](config.example.toml) | Every configuration option, annotated. |
+| [CHANGELOG.md](CHANGELOG.md) | Release history. |
 
 ## Project status
 
-This repository implements a clean, fully tested **core** (storage, embedding,
-vector search, compression, classification, hybrid retrieval, Tier‑1 conflict
-resolution) plus the `yb` binary (CLI, MCP server, hook handler, installer)
-running in **in-process mode**. Higher-tier conflict judges (NLI/LLM), ONNX
-embeddings, the standalone daemon/IPC, and team relay sync are designed behind
-stable interfaces and are the natural next steps — see the roadmap in `PLAN.md`.
+A clean, fully tested **core** (storage, embedding, vector search, compression,
+classification, hybrid retrieval + reranking, dynamic budgeting, guardrail,
+semantic cache, Tier-1 conflict resolution) plus the `yb` binary (CLI, MCP
+server, hook handler, installer) running in **in-process mode**. Optional ONNX
+embeddings ship behind the `onnx` feature. Higher-tier conflict judges (NLI/LLM),
+a HNSW index, a standalone daemon/IPC, and team relay sync are designed behind
+stable interfaces as the natural next steps.
+
+## Contributing
+
+Contributions are welcome. Before opening a PR:
+
+```bash
+cargo fmt --all
+cargo clippy --all-targets -- -D warnings
+cargo test --all
+```
+
+Keep code comments in English, and add a note to [CHANGELOG.md](CHANGELOG.md)
+for user-facing changes.
 
 ## License
 
-Apache-2.0.
+[Apache-2.0](LICENSE).
