@@ -388,6 +388,16 @@ impl Store {
         Ok(())
     }
 
+    /// Whether a session row with this id already exists.
+    pub fn session_exists(&self, id: &str) -> Result<bool> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(1) FROM sessions WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    }
+
     pub fn insert_observation(&self, o: &Observation) -> Result<()> {
         self.conn.execute(
             "INSERT INTO observations(id, session_id, kind, content, compressed, created_at, metadata)

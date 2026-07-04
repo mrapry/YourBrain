@@ -246,3 +246,23 @@ fn validate_flags_unsupported_claim() {
         .iter()
         .any(|c| c.to_lowercase().contains("blockchain")));
 }
+
+#[test]
+fn ensure_session_lets_hooks_record_external_session_ids() {
+    // Regression: IDE hooks (e.g. Claude Code) pass their own session_id on every
+    // event without calling start_session first. Recording an observation for
+    // such an id must not fail the observations->sessions foreign key.
+    let tmp = tempfile::tempdir().unwrap();
+    let b = brain_at(tmp.path());
+
+    let ide_session = "claude-abc-123"; // never created via start_session
+    b.ensure_session(ide_session, "claude-code", None, None)
+        .unwrap();
+    // Idempotent: a second ensure for the same id is a no-op, not a failure.
+    b.ensure_session(ide_session, "claude-code", None, None)
+        .unwrap();
+
+    // The observation now succeeds instead of raising a FK constraint error.
+    b.add_observation(ide_session, "prompt", "how does auth work?")
+        .unwrap();
+}

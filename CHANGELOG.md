@@ -4,6 +4,18 @@ All notable changes to YourBrain are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Hook foreign-key crash.** IDE hooks (e.g. Claude Code) send their own stable
+  `session_id` on every event instead of threading back the id minted by
+  `session_start`, so `prompt_submit`/`tool_use` recorded an observation for a
+  session row that never existed and failed the `observations -> sessions`
+  foreign key (`Error 787: FOREIGN KEY constraint failed`). Hooks now adopt the
+  IDE-provided `session_id` and get-or-create the session (`Brain::ensure_session`)
+  before writing any observation.
+
 ## [Unreleased] — v0.3.0
 
 Optional ONNX sentence-transformer embedder for real semantic understanding.

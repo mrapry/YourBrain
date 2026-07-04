@@ -892,6 +892,34 @@ impl Brain {
         Ok(session.id)
     }
 
+    /// Ensure a session row exists for the given id (get-or-create).
+    ///
+    /// IDE hooks (e.g. Claude Code) supply their own stable `session_id` on every
+    /// event rather than threading back the id minted by `start_session`. This
+    /// upserts that id so later observations don't fail the `observations ->
+    /// sessions` foreign key when `session_start` never ran or used another id.
+    pub fn ensure_session(
+        &self,
+        id: &str,
+        ide: &str,
+        cwd: Option<String>,
+        room: Option<String>,
+    ) -> Result<()> {
+        if self.store.session_exists(id)? {
+            return Ok(());
+        }
+        let session = crate::memory::Session {
+            id: id.to_string(),
+            ide: ide.to_string(),
+            cwd,
+            room,
+            started_at: Utc::now(),
+            ended_at: None,
+            metadata: None,
+        };
+        self.store.insert_session(&session)
+    }
+
     /// Mark a session as ended.
     pub fn end_session(&self, session_id: &str) -> Result<()> {
         self.store.close_session(session_id)
