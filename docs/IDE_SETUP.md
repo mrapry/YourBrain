@@ -75,6 +75,33 @@ This writes:
 - `.claude/settings.json` — **auto-capture hooks** (`yb hook …`) that record
   session activity automatically.
 
+> **Important — hooks must target the same database and embedder as the MCP
+> server.** Unlike Cursor (MCP-only), Claude Code also runs `yb hook` commands to
+> capture sessions. Those hooks open the database independently, so they must
+> carry the **same** `--db-memory`, `--embedder`, and `--embed-model` flags as
+> the server. If they don't:
+>
+> - Without `--db-memory <name>`, captured observations land in the **global**
+>   database instead of your project's, and the agent won't recall them.
+> - Without the matching `--embedder`/`--embed-model`, opening the brain **fails
+>   the embedding-dimension lock** (ADR-5) once the database is pinned to ONNX —
+>   Claude shows `UserPromptSubmit hook error … opening brain` (and previously a
+>   `FOREIGN KEY constraint failed`).
+>
+> `yb install --ide claude-code` does this for you: pass the same flags to
+> `install` and they are propagated onto every hook automatically. Read-time
+> knobs (`--budget`, `--cache-*`, `--conflict-similarity`) are **not** added to
+> hooks — they only affect the MCP read path, not capture.
+
+So when you isolate a project and pin ONNX, install it like this:
+
+```bash
+yb install --ide claude-code \
+  --db-memory my-project \
+  --embedder onnx --embed-model multilingual-e5-small \
+  --dynamic-budget --budget 300 --conflict-similarity 0.75
+```
+
 **Windows note:** Claude Code runs hooks via `sh`. If it is missing, install
 [Git for Windows](https://git-scm.com/download/win) and add `Git\bin` to `PATH`
 (`winget install Git.Git`).
@@ -91,6 +118,23 @@ This writes:
   }
 }
 ```
+
+**Manual equivalent** — `.claude/settings.json` (note every hook repeats the
+`--db-memory` / embedder flags to match the server above):
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "yb hook session_start --db-memory my-project --embedder onnx --embed-model multilingual-e5-small" }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "yb hook prompt_submit --db-memory my-project --embedder onnx --embed-model multilingual-e5-small" }] }],
+    "PostToolUse": [{ "hooks": [{ "type": "command", "command": "yb hook tool_use --db-memory my-project --embedder onnx --embed-model multilingual-e5-small" }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "yb hook session_end --db-memory my-project --embedder onnx --embed-model multilingual-e5-small" }] }]
+  }
+}
+```
+
+> Drop the `--embedder`/`--embed-model` pair if you use the default (local)
+> embedder, and drop `--db-memory` if you use the shared/global database.
 
 ---
 
