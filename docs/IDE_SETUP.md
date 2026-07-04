@@ -18,18 +18,20 @@ running `yb mcp` as a local stdio server. Any MCP-capable client can use it.
 ## Before you start
 
 1. Build the binary and note its path — see [INSTALL.md](INSTALL.md).
-   The examples below assume `yb` is on your `PATH`. If it is not, replace
+  The examples below assume `yb` is on your `PATH`. If it is not, replace
    `"yb"` with the **absolute path** to the binary, e.g.
    `"C:\\path\\to\\yourbrain\\target\\release\\yb.exe"` or
    `"/home/you/yourbrain/target/release/yb"`.
 2. `yb install` (Cursor / Claude Code) writes configs pointing at the **absolute
-   path** of the binary that ran it, so they work regardless of `PATH`.
+  path** of the binary that ran it, so they work regardless of `PATH`.
 
 > **Config root key differs by client:** Cursor, Claude Code, and Trae use
-> `mcpServers`. **VS Code uses `servers`.** Copying a block between them without
+> `mcpServers`. **VS Code uses** `servers`**.** Copying a block between them without
 > changing the root key results in the server silently not loading.
 
 ---
+
+
 
 ## Cursor
 
@@ -42,9 +44,9 @@ yb install --ide cursor
 This writes:
 
 - `.cursor/mcp.json` — the MCP server `yourbrain` (with `--db-memory <project>`
-  auto-detected from the folder / git repo name).
+auto-detected from the folder / git repo name).
 - `.cursorrules` — guidance telling the assistant to recall first, remember
-  durable facts, consult the cache, and validate important answers.
+durable facts, consult the cache, and validate important answers.
 
 Then **reload** Cursor (or toggle the server in Settings → MCP).
 
@@ -63,6 +65,8 @@ Then **reload** Cursor (or toggle the server in Settings → MCP).
 
 ---
 
+
+
 ## Claude Code
 
 ```bash
@@ -73,7 +77,7 @@ This writes:
 
 - `.mcp.json` — the MCP server `yourbrain`.
 - `.claude/settings.json` — **auto-capture hooks** (`yb hook …`) that record
-  session activity automatically.
+session activity automatically.
 
 > **Important — hooks must target the same database and embedder as the MCP
 > server.** Unlike Cursor (MCP-only), Claude Code also runs `yb hook` commands to
@@ -82,11 +86,11 @@ This writes:
 > the server. If they don't:
 >
 > - Without `--db-memory <name>`, captured observations land in the **global**
->   database instead of your project's, and the agent won't recall them.
+> database instead of your project's, and the agent won't recall them.
 > - Without the matching `--embedder`/`--embed-model`, opening the brain **fails
->   the embedding-dimension lock** (ADR-5) once the database is pinned to ONNX —
->   Claude shows `UserPromptSubmit hook error … opening brain` (and previously a
->   `FOREIGN KEY constraint failed`).
+> the embedding-dimension lock** (ADR-5) once the database is pinned to ONNX —
+> Claude shows `UserPromptSubmit hook error … opening brain` (and previously a
+> `FOREIGN KEY constraint failed`).
 >
 > `yb install --ide claude-code` does this for you: pass the same flags to
 > `install` and they are propagated onto every hook automatically. Read-time
@@ -136,14 +140,21 @@ yb install --ide claude-code \
 > Drop the `--embedder`/`--embed-model` pair if you use the default (local)
 > embedder, and drop `--db-memory` if you use the shared/global database.
 
+A ready-to-copy version is committed at
+[`.claude/settings.example.json`](../.claude/settings.example.json) — it is a
+**template** (Claude does not read `*.example.json`); copy it to
+`.claude/settings.json` and edit, or just run `yb install`.
+
 ---
+
+
 
 ## VS Code (GitHub Copilot)
 
 MCP is available in VS Code 1.102+ and tools only run in **Agent mode** (switch
 the Copilot Chat dropdown from *Ask* to *Agent*).
 
-Create **`.vscode/mcp.json`** in your workspace (note the `servers` root key and
+Create `.vscode/mcp.json` in your workspace (note the `servers` root key and
 the required `"type": "stdio"`):
 
 ```json
@@ -164,6 +175,8 @@ the server from the CodeLens in that file, then open Copilot Chat in Agent mode.
 
 ---
 
+
+
 ## Trae
 
 Trae (VS Code-based, by ByteDance) supports MCP with the standard `mcpServers`
@@ -182,31 +195,37 @@ schema.
 }
 ```
 
-**Via a project file:** create **`.trae/mcp.json`** in your workspace root with
+**Via a project file:** create `.trae/mcp.json` in your workspace root with
 the same content (Trae does not create it automatically). You can use
 `${workspaceFolder}` in `args` if needed. **Reload the window**
 (Command Palette → *Developer: Reload Window*) after editing.
 
 ---
 
+
+
 ## Available tools
 
 Once connected, the agent can call:
 
-| Tool | Purpose |
-|---|---|
-| `yb_remember` | Store a durable fact (auto conflict check). |
-| `yb_recall` | Search & retrieve token-budgeted context. |
-| `yb_resolve` | Resolve a detected conflict. |
-| `yb_validate` | Fact-check a drafted answer against the KB. |
-| `yb_cache_get` / `yb_cache_put` / `yb_cache_clear` | Layered semantic cache. |
-| `yb_endorse` / `yb_dispute` | Team consensus on a memory. |
-| `yb_timeline` / `yb_get_full` / `yb_stats` | Audit history, full content, health. |
+
+| Tool                                               | Purpose                                     |
+| -------------------------------------------------- | ------------------------------------------- |
+| `yb_remember`                                      | Store a durable fact (auto conflict check). |
+| `yb_recall`                                        | Search & retrieve token-budgeted context.   |
+| `yb_resolve`                                       | Resolve a detected conflict.                |
+| `yb_validate`                                      | Fact-check a drafted answer against the KB. |
+| `yb_cache_get` / `yb_cache_put` / `yb_cache_clear` | Layered semantic cache.                     |
+| `yb_endorse` / `yb_dispute`                        | Team consensus on a memory.                 |
+| `yb_timeline` / `yb_get_full` / `yb_stats`         | Audit history, full content, health.        |
+
 
 Every tool accepts an optional `db_memory` argument to target a specific named
 database, overriding the server default.
 
 ---
+
+
 
 ## Per-project settings
 
@@ -223,17 +242,19 @@ yb install --ide cursor \
   --conflict-similarity 0.75
 ```
 
-| Flag (on `yb mcp` / `yb install`) | Effect | Config it overrides |
-|---|---|---|
-| `--db-memory <name>` | Isolate this project's memories | — |
-| `--dynamic-budget true\|false` | Enable/disable dynamic token compression | `[token_budget] enabled` |
-| `--budget N` | Recall token budget (`0` = use config) | `[token_budget] max_tokens` / `[recall] max_tokens` |
-| `--cache-similarity F` | Tier-1 Q&A cache hit threshold | `[cache] similarity_threshold` |
-| `--cache-kb-direct F` | Tier-2 direct-from-KB threshold | `[cache] kb_direct_threshold` |
-| `--cache-kb-grounding F` | Tier-3 KB grounding threshold | `[cache] kb_grounding_threshold` |
-| `--conflict-similarity F` | Conflict candidate gate (raise to ~0.75 for ONNX) | `[conflict] similarity_threshold` |
-| `--embedder local\|onnx` | Embedding backend for this server | `[embedding] provider` |
-| `--embed-model <key>` | Embedding model key | `[embedding] model` |
+
+| Flag (on `yb mcp` / `yb install`) | Effect                                            | Config it overrides                                 |
+| --------------------------------- | ------------------------------------------------- | --------------------------------------------------- |
+| `--db-memory <name>`              | Isolate this project's memories                   | —                                                   |
+| `--dynamic-budget true|false`     | Enable/disable dynamic token compression          | `[token_budget] enabled`                            |
+| `--budget N`                      | Recall token budget (`0` = use config)            | `[token_budget] max_tokens` / `[recall] max_tokens` |
+| `--cache-similarity F`            | Tier-1 Q&A cache hit threshold                    | `[cache] similarity_threshold`                      |
+| `--cache-kb-direct F`             | Tier-2 direct-from-KB threshold                   | `[cache] kb_direct_threshold`                       |
+| `--cache-kb-grounding F`          | Tier-3 KB grounding threshold                     | `[cache] kb_grounding_threshold`                    |
+| `--conflict-similarity F`         | Conflict candidate gate (raise to ~0.75 for ONNX) | `[conflict] similarity_threshold`                   |
+| `--embedder local|onnx`           | Embedding backend for this server                 | `[embedding] provider`                              |
+| `--embed-model <key>`             | Embedding model key                               | `[embedding] model`                                 |
+
 
 The resulting `.cursor/mcp.json` looks like:
 
@@ -264,15 +285,17 @@ server flag in `mcp.json` → `config.toml`.
 
 ---
 
+
+
 ## Verify it works
 
 1. Reload the IDE / MCP server.
 2. Ask the agent to store and recall something, e.g.
-   *"Remember that this project deploys via GitHub Actions"*, then in a new chat
+  *"Remember that this project deploys via GitHub Actions"*, then in a new chat
    *"How does this project deploy?"* — the agent should call `yb_recall` and
    answer from memory.
 3. Or ask it to run `yb_stats` — it returns memory counts, the active embedding
-   model, and the `yb` version.
+  model, and the `yb` version.
 
 From a terminal you can cross-check the same database:
 
@@ -283,12 +306,3 @@ yb --db-memory my-project list
 
 ---
 
-## Reloading after changes
-
-Any edit to `mcp.json` / `.trae/mcp.json` / `.vscode/mcp.json`, or a rebuilt
-`yb` binary, requires reloading the MCP server:
-
-- **Cursor:** Settings → MCP → toggle the server off/on, or reload the window.
-- **Claude Code:** restart the session.
-- **VS Code:** restart the server from the CodeLens in `.vscode/mcp.json`.
-- **Trae:** Command Palette → *Developer: Reload Window*.

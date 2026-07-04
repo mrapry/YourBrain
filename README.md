@@ -167,6 +167,14 @@ Code automatically; VS Code and Trae take a one-file config.
 Step-by-step for every IDE, plus per-project tuning:
 **[docs/IDE_SETUP.md](docs/IDE_SETUP.md)**.
 
+> **Claude Code hooks need matching flags.** The generated `.claude/settings.json`
+> is machine-specific (absolute paths) so it is gitignored — see the committed
+> template **[`.claude/settings.example.json`](.claude/settings.example.json)**.
+> Every `yb hook` command must repeat the same `--db-memory` / `--embedder` /
+> `--embed-model` flags as your MCP server, or captured sessions land in the wrong
+> database or fail the embedding-dimension lock. `yb install --ide claude-code`
+> handles this for you.
+
 Once connected, the agent gets these tools: `yb_remember`, `yb_recall`,
 `yb_resolve`, `yb_endorse`, `yb_dispute`, `yb_timeline`, `yb_get_full`,
 `yb_stats`, `yb_validate`, `yb_cache_get`, `yb_cache_put`, `yb_cache_clear`.

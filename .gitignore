@@ -18,6 +18,8 @@ Thumbs.db
 .mcp.json
 .trae/mcp.json
 .claude/settings.json
+# ...but keep the committed, portable template
+!.claude/settings.example.json
 
 # Internal docs (not published)
 docs/PANDUAN.md

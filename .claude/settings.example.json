@@ -1,0 +1,45 @@
+{
+  "_template": "EXAMPLE ONLY — this file is a template and is NOT read by Claude Code. Copy it to .claude/settings.json (which is gitignored, machine-specific) and edit it, or just run `yb install --ide claude-code [flags]` to generate the real file with the correct ABSOLUTE binary path. IMPORTANT: every hook must repeat the SAME --db-memory / --embedder / --embed-model flags as your .mcp.json MCP server, otherwise captured sessions go to the wrong database or fail the embedding-dimension lock (ADR-5). Replace `yb` with the absolute path to the binary if it is not on PATH (e.g. C:/path/to/yourbrain/target/release/yb.exe); replace `my-project` with your db name; drop the --embedder/--embed-model pair if you use the default local embedder; drop --db-memory to use the shared/global database.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "yb hook session_start --db-memory my-project --embedder onnx --embed-model multilingual-e5-small"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "yb hook prompt_submit --db-memory my-project --embedder onnx --embed-model multilingual-e5-small"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "yb hook tool_use --db-memory my-project --embedder onnx --embed-model multilingual-e5-small"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "yb hook session_end --db-memory my-project --embedder onnx --embed-model multilingual-e5-small"
+          }
+        ]
+      }
+    ]
+  }
+}
