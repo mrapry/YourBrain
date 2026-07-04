@@ -9,6 +9,13 @@
 use std::sync::Arc;
 
 /// Produces dense vector embeddings for text.
+///
+/// Some models (e.g. the E5 family) are asymmetric: they expect a `query:` /
+/// `passage:` instruction prefix and score best when queries and stored
+/// documents are embedded differently. [`Embedder::embed_query`] and
+/// [`Embedder::embed_document`] express that intent; both default to
+/// [`Embedder::embed`], so symmetric backends (like [`HashEmbedder`]) need not
+/// implement them.
 pub trait Embedder: Send + Sync {
     /// Stable identifier of the model (stored in `brain_meta`, see ADR-5).
     fn model_id(&self) -> &str;
@@ -19,6 +26,14 @@ pub trait Embedder: Send + Sync {
     /// Embed many strings. Default maps over [`Embedder::embed`].
     fn embed_batch(&self, texts: &[String]) -> Vec<Vec<f32>> {
         texts.iter().map(|t| self.embed(t)).collect()
+    }
+    /// Embed a search query. Defaults to [`Embedder::embed`].
+    fn embed_query(&self, text: &str) -> Vec<f32> {
+        self.embed(text)
+    }
+    /// Embed a stored document/passage. Defaults to [`Embedder::embed`].
+    fn embed_document(&self, text: &str) -> Vec<f32> {
+        self.embed(text)
     }
 }
 
@@ -31,6 +46,12 @@ impl Embedder for Arc<dyn Embedder> {
     }
     fn embed(&self, text: &str) -> Vec<f32> {
         (**self).embed(text)
+    }
+    fn embed_query(&self, text: &str) -> Vec<f32> {
+        (**self).embed_query(text)
+    }
+    fn embed_document(&self, text: &str) -> Vec<f32> {
+        (**self).embed_document(text)
     }
 }
 
@@ -106,6 +127,115 @@ impl Embedder for HashEmbedder {
 
         l2_normalize(&mut v);
         v
+    }
+}
+
+/// ONNX sentence-transformer backend (feature `onnx`), powered by `fastembed`.
+///
+/// `fastembed` handles tokenization, mean pooling, and L2 normalization, and
+/// downloads the model from HuggingFace on first use (cached on disk). Models
+/// in the E5 family are asymmetric, so `query:` / `passage:` prefixes are
+/// applied automatically via [`Embedder::embed_query`] / `embed_document`.
+#[cfg(feature = "onnx")]
+pub struct OnnxEmbedder {
+    inner: fastembed::TextEmbedding,
+    model_id: String,
+    dim: usize,
+    /// Whether to prepend E5-style `query:` / `passage:` instruction prefixes.
+    prefixed: bool,
+}
+
+#[cfg(feature = "onnx")]
+impl OnnxEmbedder {
+    /// Build the embedder for a model key (e.g. `"multilingual-e5-small"`),
+    /// downloading it into `cache_dir` if provided. Returns the resolved
+    /// dimension so callers can keep the DB lock (ADR-5) consistent.
+    pub fn new(model_key: &str, cache_dir: Option<&str>) -> crate::error::Result<Self> {
+        use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+
+        let key = model_key.trim().to_lowercase();
+        let (model, dim) = match key.as_str() {
+            "multilingual-e5-small" | "e5-small" => (EmbeddingModel::MultilingualE5Small, 384),
+            "multilingual-e5-base" | "e5-base" => (EmbeddingModel::MultilingualE5Base, 768),
+            "multilingual-e5-large" | "e5-large" => (EmbeddingModel::MultilingualE5Large, 1024),
+            "all-minilm-l6-v2" | "minilm" => (EmbeddingModel::AllMiniLML6V2, 384),
+            "bge-small-en-v1.5" | "bge-small-en" | "bge-small" => {
+                (EmbeddingModel::BGESmallENV15, 384)
+            }
+            "paraphrase-multilingual-minilm-l12-v2" | "paraphrase-ml-minilm" => {
+                (EmbeddingModel::ParaphraseMLMiniLML12V2, 384)
+            }
+            other => {
+                return Err(crate::error::YbError::Embedder(format!(
+                    "unsupported ONNX model `{other}` (try: multilingual-e5-small, \
+                     multilingual-e5-base, all-minilm-l6-v2, bge-small-en-v1.5, \
+                     paraphrase-multilingual-minilm-l12-v2)"
+                )));
+            }
+        };
+
+        let mut opts = InitOptions::new(model).with_show_download_progress(true);
+        if let Some(dir) = cache_dir {
+            opts = opts.with_cache_dir(std::path::PathBuf::from(dir));
+        }
+        let inner = TextEmbedding::try_new(opts)
+            .map_err(|e| crate::error::YbError::Embedder(format!("failed to load model: {e}")))?;
+
+        Ok(Self {
+            inner,
+            model_id: key.clone(),
+            dim,
+            // E5 models are trained with instruction prefixes; others are not.
+            prefixed: key.contains("e5"),
+        })
+    }
+
+    fn run(&self, text: &str, prefix: &str) -> Vec<f32> {
+        let input = if self.prefixed {
+            format!("{prefix}{text}")
+        } else {
+            text.to_string()
+        };
+        match self.inner.embed(vec![input], None) {
+            Ok(mut v) if !v.is_empty() => v.swap_remove(0),
+            _ => vec![0f32; self.dim],
+        }
+    }
+
+    fn run_batch(&self, texts: Vec<String>) -> Vec<Vec<f32>> {
+        self.inner.embed(texts, None).unwrap_or_default()
+    }
+}
+
+#[cfg(feature = "onnx")]
+impl Embedder for OnnxEmbedder {
+    fn model_id(&self) -> &str {
+        &self.model_id
+    }
+
+    fn dimension(&self) -> usize {
+        self.dim
+    }
+
+    fn embed(&self, text: &str) -> Vec<f32> {
+        // Generic embed is treated as a document/passage.
+        self.run(text, "passage: ")
+    }
+
+    fn embed_query(&self, text: &str) -> Vec<f32> {
+        self.run(text, "query: ")
+    }
+
+    fn embed_document(&self, text: &str) -> Vec<f32> {
+        self.run(text, "passage: ")
+    }
+
+    fn embed_batch(&self, texts: &[String]) -> Vec<Vec<f32>> {
+        if !self.prefixed {
+            return self.run_batch(texts.to_vec());
+        }
+        let prefixed: Vec<String> = texts.iter().map(|t| format!("passage: {t}")).collect();
+        self.run_batch(prefixed)
     }
 }
 

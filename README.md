@@ -136,10 +136,11 @@ at the current `yb` binary. See the
 | `yb timeline <id>` | Audit history. |
 | `yb stats` | Statistics & health. |
 | `yb export [--scope team] [--out file]` / `yb import <file>` | JSONL export/import. |
+| `yb reindex [--provider onnx] [--model KEY] [--cache-dir DIR] [--yes]` | Re-embed all memories & rebuild the vector index (migrate embedder). |
 | `yb config show` | Show config & paths. |
-| `yb mcp [--dynamic-budget true\|false] [--budget N] [--cache-* F]` | Start the MCP stdio server (per-project budget & cache thresholds). |
+| `yb mcp [--dynamic-budget true\|false] [--budget N] [--cache-* F] [--embedder local\|onnx] [--embed-model KEY] [--conflict-similarity F]` | Start the MCP stdio server (per-project budget, cache/conflict thresholds & embedder defaults). |
 | `yb hook <event>` | Handle an IDE hook (reads JSON from stdin). |
-| `yb install --ide cursor\|claude-code [--dynamic-budget] [--budget N] [--cache-* F]` | Generate IDE integration files. |
+| `yb install --ide cursor\|claude-code [--dynamic-budget] [--budget N] [--cache-* F] [--embedder onnx] [--embed-model KEY] [--conflict-similarity F]` | Generate IDE integration files. |
 
 ## Configuration
 
@@ -234,6 +235,124 @@ For **live tuning** (no restart), pass the thresholds per call — via the
 
 Precedence (highest wins): per-call argument → server flag in `mcp.json` →
 `[cache]` in `config.toml`.
+
+## ONNX embedder (proper semantic understanding)
+
+The default embedder (`hash-bow-v1`) is dependency-free but only matches on
+shared vocabulary — paraphrases with no common words score ~0. For real semantic
+understanding, YourBrain ships an optional ONNX [sentence-transformer](https://www.sbert.net/)
+backend powered by [`fastembed`](https://github.com/anush008/fastembed-rs)
+(tokenizer + pooling + L2 normalization included). It is behind the `onnx` cargo
+feature so default builds stay lean and portable.
+
+**Build with the feature:**
+
+```bash
+cargo build --release --features onnx
+```
+
+> **Windows build note.** The default release profile uses aggressive `lto`
+> (`Cargo.toml` sets `lto = "thin"`), which can crash the `rustc` code generator
+> (`STATUS_ACCESS_VIOLATION`, exit `0xc0000005`) while compiling the large ONNX
+> dependency graph (`ort` / `onnxruntime`). If that happens, disable LTO for the
+> ONNX build — the binary stays optimized:
+>
+> ```powershell
+> # PowerShell (Windows)
+> $env:CARGO_PROFILE_RELEASE_LTO="off"
+> $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS="16"
+> cargo build --release --features onnx
+> ```
+>
+> ```bash
+> # bash (Linux/macOS)
+> CARGO_PROFILE_RELEASE_LTO=off CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+>   cargo build --release --features onnx
+> ```
+>
+> The resulting `target/release/yb.exe` is the ONNX-enabled binary; point
+> `.cursor/mcp.json`'s `command` at it (this is what `yb install` writes when run
+> from that binary). The ONNX runtime library is loaded from `ort`'s own cache,
+> so the binary runs from any working directory.
+
+The model downloads from HuggingFace on first use and is cached on disk.
+Supported model keys: `multilingual-e5-small` (384d, multilingual — good for
+mixed EN/ID), `multilingual-e5-base` (768d), `all-minilm-l6-v2` (384d),
+`bge-small-en-v1.5` (384d), `paraphrase-multilingual-minilm-l12-v2` (384d).
+E5 models get the `query:` / `passage:` instruction prefixes automatically.
+
+**Migrate an existing database.** The vector dimension is locked at creation
+(ADR-5), so switching models requires re-embedding. Stop the MCP server, then:
+
+```bash
+# Dry-run preview first (omit --yes):
+yb reindex --provider onnx --model multilingual-e5-small --yes
+```
+
+`reindex` re-embeds every memory, rebuilds the vector index, clears the semantic
+cache (its query vectors belong to the old space), and moves the ADR-5 lock to
+the new model.
+
+**Point the MCP server at the ONNX backend (per project via `mcp.json`):**
+
+```bash
+yb install --ide cursor --embedder onnx --embed-model multilingual-e5-small
+# → args: ["mcp", "--db-memory", "<project>", "--embedder", "onnx", "--embed-model", "multilingual-e5-small"]
+```
+
+You can also set `[embedding] provider = "onnx"` in `config.toml` to make it the
+global default. Precedence: `mcp.json` server flags → `config.toml`.
+
+Direct CLI access to a database that was reindexed to ONNX needs the same
+embedder flags (they are global options on every subcommand):
+
+```bash
+yb --db-memory <project> --embedder onnx --embed-model multilingual-e5-small recall "…"
+```
+
+**Tune the conflict threshold for ONNX.** `[conflict] similarity_threshold`
+defaults to `0.45`, tuned for the hash embedder's compressed similarity scale.
+Real sentence-transformers produce higher, better-separated cosine scores, so
+raise it to about `0.75`. Set it globally in `config.toml`:
+
+```toml
+[conflict]
+similarity_threshold = 0.75
+```
+
+…or per project (server) via `mcp.json`, mirroring the cache flags:
+
+```bash
+yb install --ide cursor --embedder onnx --embed-model multilingual-e5-small \
+  --conflict-similarity 0.75
+```
+
+Precedence: `mcp.json` `--conflict-similarity` → `[conflict]` in `config.toml`.
+
+### Testing the ONNX embedder
+
+The automated suite (`cargo test --all`) uses the deterministic hash embedder, so
+it needs no network or model download. `cargo test --features onnx` compiles the
+ONNX code path but the tests still run on the hash embedder. Verify the ONNX
+backend itself manually — the sharpest check is a **paraphrase recall** that
+shares no vocabulary with the stored memory (which the hash embedder cannot
+match). Use a throwaway database to A/B the two backends:
+
+```bash
+export YB_DATA_DIR=/tmp/yb-onnx-test        # PowerShell: $env:YB_DATA_DIR="$env:TEMP\yb-onnx-test"
+
+yb remember "Backend uses Rust with the Axum web framework"
+yb recall "what language and library power the server"        # hash: weak/miss
+
+yb reindex --provider onnx --model multilingual-e5-small --yes
+yb --embedder onnx --embed-model multilingual-e5-small \
+   recall "what language and library power the server"        # onnx: strong semantic match
+```
+
+Inside Cursor, reload the `yourbrain` MCP server after changing `mcp.json`, then
+ask a paraphrased question and confirm `yb_recall` still returns the right
+memory. `yb stats` (with the matching `--embedder` flags) reports the active
+model and dimension, e.g. `multilingual-e5-small (384d)`.
 
 ## Documentation
 

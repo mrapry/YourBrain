@@ -35,12 +35,23 @@ struct BrainPool {
     budget: usize,
 }
 
+/// Per-project embedder override supplied via this server's mcp.json launch
+/// flags (`yb mcp --embedder onnx --embed-model <key>`). Overrides the shared
+/// `config.toml` `[embedding]` section for this server only.
+#[derive(Debug, Clone, Default)]
+pub struct EmbedderOverride {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+}
+
 impl BrainPool {
     fn new(
         default_db: Option<String>,
         dynamic_budget: Option<bool>,
         budget: usize,
         cache_overrides: yb_core::brain::CacheOverrides,
+        embedder: EmbedderOverride,
+        conflict_similarity: Option<f32>,
     ) -> Result<Self> {
         // Server-wide cache-threshold overrides (per project via its mcp.json)
         // take precedence over config.toml, acting as this server's default.
@@ -53,6 +64,15 @@ impl BrainPool {
         }
         if let Some(v) = cache_overrides.kb_grounding {
             config.cache.kb_grounding_threshold = v;
+        }
+        if let Some(p) = embedder.provider {
+            config.embedding.provider = p;
+        }
+        if let Some(m) = embedder.model {
+            config.embedding.model = m;
+        }
+        if let Some(v) = conflict_similarity {
+            config.conflict.similarity_threshold = v;
         }
         Ok(Self {
             default_db,
@@ -95,8 +115,17 @@ pub fn run(
     dynamic_budget: Option<bool>,
     budget: usize,
     cache_overrides: yb_core::brain::CacheOverrides,
+    embedder: EmbedderOverride,
+    conflict_similarity: Option<f32>,
 ) -> Result<()> {
-    let mut pool = BrainPool::new(default_db, dynamic_budget, budget, cache_overrides)?;
+    let mut pool = BrainPool::new(
+        default_db,
+        dynamic_budget,
+        budget,
+        cache_overrides,
+        embedder,
+        conflict_similarity,
+    )?;
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut out = stdout.lock();

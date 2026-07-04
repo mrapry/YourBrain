@@ -258,6 +258,46 @@ pub fn stats() -> Result<()> {
     Ok(())
 }
 
+/// Re-embed all memories with a (possibly different) embedder and rebuild the
+/// vector index — the migration path for switching embedding models (ADR-5).
+pub fn reindex(
+    provider: Option<String>,
+    model: Option<String>,
+    cache_dir: Option<String>,
+    yes: bool,
+) -> Result<()> {
+    let dir = context::active_db_dir()?;
+    let mut config = context::load_config()?;
+    if let Some(p) = provider {
+        config.embedding.provider = p;
+    }
+    if let Some(m) = model {
+        config.embedding.model = m;
+    }
+    if cache_dir.is_some() {
+        config.embedding.cache_dir = cache_dir;
+    }
+
+    if !yes {
+        println!(
+            "About to re-embed all memories in {} with provider `{}` model `{}`.",
+            dir.display(),
+            config.embedding.provider,
+            config.embedding.model
+        );
+        println!("The semantic cache will be cleared. Re-run with --yes to proceed.");
+        return Ok(());
+    }
+
+    println!("Reindexing… (first ONNX run downloads the model, please wait)");
+    let report = yb_core::Brain::reindex(&dir, config)?;
+    println!(
+        "Reindexed {} memories → model `{}` ({}d).",
+        report.reembedded, report.model, report.dimension
+    );
+    Ok(())
+}
+
 pub fn config_show() -> Result<()> {
     let cfg = context::load_config()?;
     println!("# yb version: {}", env!("CARGO_PKG_VERSION"));

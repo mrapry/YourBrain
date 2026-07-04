@@ -18,11 +18,24 @@ max_backups = 7
 
 [embedding]
 # Default is the dependency-free deterministic embedder (no ONNX toolchain
-# required). "onnx" / "ollama" / "openai" backends are planned behind feature
-# flags. The dimension is LOCKED into the database on first use (ADR-5).
+# required). The dimension is LOCKED into the database on first use (ADR-5), so
+# switching models requires `yb reindex` (re-embeds all memories).
 provider = "local"
 model = "hash-bow-v1"
 dimension = 256
+#
+# ONNX sentence-transformer backend (proper semantic understanding). Requires a
+# binary built with `--features onnx`; the model is downloaded from HuggingFace
+# on first use and cached on disk. `dimension` is derived from the model.
+#   provider = "onnx"
+#   model = "multilingual-e5-small"   # 384d, multilingual (ID+EN). Also:
+#                                     # all-minilm-l6-v2, bge-small-en-v1.5,
+#                                     # multilingual-e5-base (768d),
+#                                     # paraphrase-multilingual-minilm-l12-v2
+#   cache_dir = "~/.yourbrain/models" # optional model cache location
+#
+# Migration flow (run once, MCP server stopped):
+#   yb reindex --provider onnx --model multilingual-e5-small --yes
 
 [search]
 default_limit = 5

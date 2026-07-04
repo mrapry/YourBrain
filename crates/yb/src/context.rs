@@ -22,6 +22,27 @@ fn default_db() -> Option<String> {
     DEFAULT_DB.get().cloned().flatten()
 }
 
+/// Process-wide embedder override from the global `--embedder` / `--embed-model`
+/// CLI flags. Lets any command target a database that was reindexed to a
+/// non-default embedder without editing the shared `config.toml`.
+static EMBEDDER_OVERRIDE: OnceLock<(Option<String>, Option<String>)> = OnceLock::new();
+
+/// Record the process-wide embedder override (idempotent; first write wins).
+pub fn set_embedder_override(provider: Option<String>, model: Option<String>) {
+    let _ = EMBEDDER_OVERRIDE.set((provider, model));
+}
+
+fn apply_embedder_override(config: &mut Config) {
+    if let Some((provider, model)) = EMBEDDER_OVERRIDE.get() {
+        if let Some(p) = provider {
+            config.embedding.provider = p.clone();
+        }
+        if let Some(m) = model {
+            config.embedding.model = m.clone();
+        }
+    }
+}
+
 /// Resolve the base data directory holding `config.toml` and, for the global
 /// database, `brain.db` / `brain.ybv`.
 ///
@@ -123,7 +144,8 @@ pub fn open_brain() -> Result<Brain> {
 /// Open the brain for a specific `db_memory` (or the global database when `None`).
 pub fn open_brain_with(db_memory: Option<&str>) -> Result<Brain> {
     let dir = resolve_db_dir(db_memory)?;
-    let config = load_config()?;
+    let mut config = load_config()?;
+    apply_embedder_override(&mut config);
     let brain = Brain::open(&dir, config).context("opening brain")?;
     Ok(brain)
 }

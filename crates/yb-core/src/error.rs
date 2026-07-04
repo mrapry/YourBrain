@@ -36,6 +36,11 @@ pub enum YbError {
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
 
+    /// Failure while initializing or running an embedding backend (e.g. the
+    /// optional ONNX model failed to download or load).
+    #[error("embedder error: {0}")]
+    Embedder(String),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 

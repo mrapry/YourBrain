@@ -47,6 +47,9 @@ fn detect_project_name() -> Option<String> {
         .and_then(context::sanitize_db_name)
 }
 
+/// Build the `yb mcp` argument list, isolating into `--db-memory <name>` when a
+/// project name can be detected, and optionally pinning this project's dynamic
+/// token budgeter and budget (written into the generated mcp.json).
 /// Per-project cache-threshold overrides written into the generated mcp.json.
 #[derive(Clone, Copy, Default)]
 pub struct CacheFlags {
@@ -55,10 +58,21 @@ pub struct CacheFlags {
     pub kb_grounding: Option<f32>,
 }
 
-/// Build the `yb mcp` argument list, isolating into `--db-memory <name>` when a
-/// project name can be detected, and optionally pinning this project's dynamic
-/// token budgeter, budget, and cache thresholds (written into the mcp.json).
-fn mcp_args(dynamic_budget: bool, budget: usize, cache: CacheFlags) -> Vec<String> {
+/// Per-project embedder override written into the generated mcp.json.
+#[derive(Clone, Default)]
+pub struct EmbedFlags {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    /// Override [conflict] similarity_threshold for this server.
+    pub conflict_similarity: Option<f32>,
+}
+
+fn mcp_args(
+    dynamic_budget: bool,
+    budget: usize,
+    cache: CacheFlags,
+    embed: &EmbedFlags,
+) -> Vec<String> {
     let mut args = vec!["mcp".to_string()];
     if let Some(name) = detect_project_name() {
         args.push("--db-memory".to_string());
@@ -84,6 +98,18 @@ fn mcp_args(dynamic_budget: bool, budget: usize, cache: CacheFlags) -> Vec<Strin
         args.push("--cache-kb-grounding".to_string());
         args.push(v.to_string());
     }
+    if let Some(p) = &embed.provider {
+        args.push("--embedder".to_string());
+        args.push(p.clone());
+    }
+    if let Some(m) = &embed.model {
+        args.push("--embed-model".to_string());
+        args.push(m.clone());
+    }
+    if let Some(v) = embed.conflict_similarity {
+        args.push("--conflict-similarity".to_string());
+        args.push(v.to_string());
+    }
     args
 }
 
@@ -95,22 +121,35 @@ pub fn run(
     cache_similarity: Option<f32>,
     cache_kb_direct: Option<f32>,
     cache_kb_grounding: Option<f32>,
+    embedder: Option<String>,
+    embed_model: Option<String>,
+    conflict_similarity: Option<f32>,
 ) -> Result<()> {
     let cache = CacheFlags {
         similarity: cache_similarity,
         kb_direct: cache_kb_direct,
         kb_grounding: cache_kb_grounding,
     };
+    let embed = EmbedFlags {
+        provider: embedder,
+        model: embed_model,
+        conflict_similarity,
+    };
     match ide {
-        "cursor" => install_cursor(dynamic_budget, budget, cache),
-        "claude-code" | "claude" => install_claude_code(dynamic_budget, budget, cache),
+        "cursor" => install_cursor(dynamic_budget, budget, cache, &embed),
+        "claude-code" | "claude" => install_claude_code(dynamic_budget, budget, cache, &embed),
         other => anyhow::bail!("unsupported IDE `{other}` (supported: cursor, claude-code)"),
     }
 }
 
-fn install_cursor(dynamic_budget: bool, budget: usize, cache: CacheFlags) -> Result<()> {
+fn install_cursor(
+    dynamic_budget: bool,
+    budget: usize,
+    cache: CacheFlags,
+    embed: &EmbedFlags,
+) -> Result<()> {
     let cmd = yb_command();
-    let args = mcp_args(dynamic_budget, budget, cache);
+    let args = mcp_args(dynamic_budget, budget, cache, embed);
     let mcp = json!({
         "mcpServers": {
             "yourbrain": { "command": cmd, "args": args }
@@ -141,9 +180,14 @@ important factual answer, call `yb_validate` and revise any unsupported claims.
     Ok(())
 }
 
-fn install_claude_code(dynamic_budget: bool, budget: usize, cache: CacheFlags) -> Result<()> {
+fn install_claude_code(
+    dynamic_budget: bool,
+    budget: usize,
+    cache: CacheFlags,
+    embed: &EmbedFlags,
+) -> Result<()> {
     let cmd = yb_command();
-    let args = mcp_args(dynamic_budget, budget, cache);
+    let args = mcp_args(dynamic_budget, budget, cache, embed);
     let mcp = json!({
         "mcpServers": {
             "yourbrain": { "command": cmd, "args": args }
@@ -217,6 +261,17 @@ fn print_db_memory_note(args: &[String]) {
             if let Some(v) = args.get(i + 1) {
                 println!("Pinned {label} threshold: {v}.");
             }
+        }
+    }
+    if let Some(i) = args.iter().position(|a| a == "--embedder") {
+        if let Some(v) = args.get(i + 1) {
+            println!("Embedder pinned for this project: {v}.");
+            println!("Reminder: run `yb reindex --provider {v} --yes` once before using it.");
+        }
+    }
+    if let Some(i) = args.iter().position(|a| a == "--conflict-similarity") {
+        if let Some(v) = args.get(i + 1) {
+            println!("Pinned conflict similarity threshold: {v}.");
         }
     }
 }

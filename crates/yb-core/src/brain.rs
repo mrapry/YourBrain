@@ -130,6 +130,17 @@ pub struct Stats {
     pub dimension: usize,
 }
 
+/// Outcome of a [`Brain::reindex`] migration.
+#[derive(Debug, Clone)]
+pub struct ReindexReport {
+    /// The model id now locked into the database.
+    pub model: String,
+    /// The vector dimension now locked into the database.
+    pub dimension: usize,
+    /// Number of memories re-embedded.
+    pub reembedded: usize,
+}
+
 /// The engine. Holds owned handles to every subsystem.
 pub struct Brain {
     store: Store,
@@ -146,7 +157,7 @@ impl Brain {
     pub fn open(data_dir: &Path, config: Config) -> Result<Self> {
         std::fs::create_dir_all(data_dir)?;
         let store = Store::open(&data_dir.join("brain.db"))?;
-        let embedder = build_embedder(&config);
+        let embedder = build_embedder(&config)?;
         store.ensure_embedding_lock(embedder.model_id(), embedder.dimension())?;
 
         let index_path = data_dir.join("brain.ybv");
@@ -169,7 +180,7 @@ impl Brain {
     /// Build an all-in-memory brain for tests.
     pub fn in_memory(config: Config) -> Result<Self> {
         let store = Store::open_in_memory()?;
-        let embedder = build_embedder(&config);
+        let embedder = build_embedder(&config)?;
         store.ensure_embedding_lock(embedder.model_id(), embedder.dimension())?;
         let index = FlatIndex::new(embedder.dimension());
         let compressor = Compressor::new(config.compression.to_compress_config());
@@ -267,7 +278,7 @@ impl Brain {
         };
 
         // 5. Embed (kept locally; only added to the index once we decide to store).
-        let embedding = self.embedder.embed(&memory.content);
+        let embedding = self.embedder.embed_document(&memory.content);
 
         // 6. Candidate search against the existing index.
         let candidates = self.find_candidates(&embedding)?;
@@ -361,7 +372,7 @@ impl Brain {
         }
 
         let new_memory = conflict.new_memory.clone();
-        let embedding = self.embedder.embed(&new_memory.content);
+        let embedding = self.embedder.embed_document(&new_memory.content);
         let existing_ids = conflict.existing_memory_ids.clone();
 
         let stored_id = self.apply_resolution(
@@ -458,7 +469,7 @@ impl Brain {
                 merged.compressed = levels.compressed;
                 merged.summary = levels.summary;
                 merged.headline = levels.headline;
-                let merged_emb = self.embedder.embed(&content);
+                let merged_emb = self.embedder.embed_document(&content);
                 self.persist_new(&merged, &merged_emb, event)?;
                 for id in existing_ids {
                     self.store.set_state(id, MemoryState::Superseded)?;
@@ -536,7 +547,7 @@ impl Brain {
             self.config.recall.max_tokens
         };
 
-        let qvec = self.embedder.embed(query);
+        let qvec = self.embedder.embed_query(query);
         // Fetch a larger candidate pool so the reranker has room to work.
         let factor = self.config.rerank.candidate_pool_factor.max(1);
         let fetch = (limit * factor).max(10);
@@ -610,7 +621,7 @@ impl Brain {
         let t1 = overrides.similarity.unwrap_or(cfg.similarity_threshold);
         let kb_direct = overrides.kb_direct.unwrap_or(cfg.kb_direct_threshold);
         let kb_grounding = overrides.kb_grounding.unwrap_or(cfg.kb_grounding_threshold);
-        let qvec = self.embedder.embed(query);
+        let qvec = self.embedder.embed_query(query);
 
         // Tier 1: conversational Q&A cache.
         let entries = self.store.cache_entries(room)?;
@@ -717,7 +728,7 @@ impl Brain {
         let entry = CacheEntry {
             id: ulid::Ulid::new().to_string(),
             query: query.to_string(),
-            query_embedding: self.embedder.embed(query),
+            query_embedding: self.embedder.embed_query(query),
             answer: answer.to_string(),
             source_ids,
             room,
@@ -904,9 +915,49 @@ impl Brain {
         if self.store.get_memory(&memory.id)?.is_some() {
             return Ok(false);
         }
-        let embedding = self.embedder.embed(&memory.content);
+        let embedding = self.embedder.embed_document(&memory.content);
         self.persist_new(&memory, &embedding, "imported")?;
         Ok(true)
+    }
+
+    /// Re-embed every stored memory with the embedder described by `new_config`
+    /// and rebuild the vector index, then update the ADR-5 model/dimension lock.
+    ///
+    /// This is the migration path for switching embedding models (e.g. from the
+    /// bundled hash embedder to an ONNX sentence-transformer), including when the
+    /// vector dimension changes. The semantic cache is cleared because its stored
+    /// query embeddings belong to the previous model's space.
+    ///
+    /// Runs as a standalone operation (it must bypass the lock check that
+    /// [`Brain::open`] enforces), so callers pass the data dir directly.
+    pub fn reindex(data_dir: &Path, new_config: Config) -> Result<ReindexReport> {
+        let store = Store::open(&data_dir.join("brain.db"))?;
+        let embedder = build_embedder(&new_config)?;
+        let model = embedder.model_id().to_string();
+        let dimension = embedder.dimension();
+
+        let memories = store.list_memories(None, None, usize::MAX)?;
+        let mut index = FlatIndex::new(dimension);
+        for m in &memories {
+            let v = embedder.embed_document(&m.content);
+            store.set_embedding(&m.id, &v)?;
+            index.upsert(&m.id, v);
+        }
+
+        // Stored cache query-embeddings belong to the old vector space.
+        store.cache_clear(None)?;
+
+        // Move the ADR-5 lock to the new model/dimension.
+        store.meta_set("embedding_model", &model)?;
+        store.meta_set("embedding_dimension", &dimension.to_string())?;
+
+        index.save(&data_dir.join("brain.ybv"))?;
+
+        Ok(ReindexReport {
+            model,
+            dimension,
+            reembedded: memories.len(),
+        })
     }
 
     /// Record a raw observation (prompt, tool_use, response, error).
@@ -933,13 +984,27 @@ fn parse_scope(s: &str) -> Scope {
     }
 }
 
-/// Build the embedder from config. Only the dependency-free hash embedder is
-/// wired by default; other providers fall back to it until their feature-gated
-/// backends are enabled.
-fn build_embedder(config: &Config) -> Box<dyn Embedder> {
-    // Future: dispatch on `config.embedding.provider` ("onnx" | "ollama" |
-    // "openai") behind feature flags. Only the dependency-free backend is wired.
-    Box::new(HashEmbedder::new(config.embedding.dimension))
+/// Build the embedder from config. The dependency-free hash embedder is always
+/// available; the `onnx` sentence-transformer backend is wired only when the
+/// crate is built with `--features onnx`.
+fn build_embedder(config: &Config) -> Result<Box<dyn Embedder>> {
+    match config.embedding.provider.as_str() {
+        #[cfg(feature = "onnx")]
+        "onnx" => {
+            let e = crate::embed::OnnxEmbedder::new(
+                &config.embedding.model,
+                config.embedding.cache_dir.as_deref(),
+            )?;
+            Ok(Box::new(e))
+        }
+        #[cfg(not(feature = "onnx"))]
+        "onnx" => Err(crate::error::YbError::Embedder(
+            "provider `onnx` requested but this binary was built without the \
+             `onnx` feature; rebuild with `cargo build --features onnx`"
+                .into(),
+        )),
+        _ => Ok(Box::new(HashEmbedder::new(config.embedding.dimension))),
+    }
 }
 
 #[cfg(test)]

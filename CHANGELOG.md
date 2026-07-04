@@ -4,6 +4,45 @@ All notable changes to YourBrain are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — v0.3.0
+
+Optional ONNX sentence-transformer embedder for real semantic understanding.
+
+### Added
+
+- **ONNX embedder (`onnx` cargo feature).** A sentence-transformer backend via
+  [`fastembed`](https://github.com/anush008/fastembed-rs) (tokenizer + mean
+  pooling + L2 normalization; model auto-downloaded from HuggingFace and cached).
+  Off by default so standard builds stay dependency-free; enable with
+  `cargo build --features onnx`. Supported model keys include
+  `multilingual-e5-small` (default, 384d, multilingual), `multilingual-e5-base`,
+  `all-minilm-l6-v2`, `bge-small-en-v1.5`, `paraphrase-multilingual-minilm-l12-v2`.
+- **Asymmetric embedding.** New `Embedder::embed_query` / `embed_document`
+  methods (default to `embed`); the ONNX backend applies E5 `query:` / `passage:`
+  instruction prefixes automatically. Call sites now distinguish query vs.
+  document embedding.
+- **`yb reindex` (CLI).** Re-embeds every memory with a chosen provider/model,
+  rebuilds the vector index, clears the semantic cache, and moves the ADR-5
+  model/dimension lock — the migration path for switching embedders. Dry-run by
+  default; pass `--yes` to apply.
+- **Per-project embedder override.** `yb mcp --embedder onnx --embed-model <key>`
+  (writable via `yb install`) overrides `config.toml` `[embedding]` for one
+  server. New `[embedding] cache_dir` config option for the model cache. Global
+  `--embedder` / `--embed-model` CLI options let any subcommand target a
+  reindexed database.
+- **Per-project conflict threshold.** `yb mcp --conflict-similarity <f>`
+  (writable via `yb install`) overrides `[conflict] similarity_threshold` for one
+  server — raise to ~0.75 when using ONNX embeddings.
+
+### Notes
+
+- The ONNX model download requires internet on first use. The `onnx` feature is
+  opt-in; a binary built without it errors clearly if `provider = "onnx"`.
+- **Windows release build:** the aggressive `lto = "thin"` release profile can
+  crash `rustc` codegen (`STATUS_ACCESS_VIOLATION`) on the ONNX dependency graph.
+  Build the ONNX binary with `CARGO_PROFILE_RELEASE_LTO=off`
+  (and `CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16`); it stays optimized. See README.
+
 ## [0.2.0]
 
 Retrieval precision, token efficiency, anti-hallucination, and a

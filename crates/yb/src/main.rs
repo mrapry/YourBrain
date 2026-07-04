@@ -25,6 +25,13 @@ struct Cli {
     /// (`dbs/<name>`). When omitted, the shared/global database is used.
     #[arg(long = "db-memory", global = true)]
     db_memory: Option<String>,
+    /// Override the embedding provider (`local` | `onnx`) for this invocation.
+    /// Needed to access a database that was reindexed to a non-default embedder.
+    #[arg(long = "embedder", global = true)]
+    embedder: Option<String>,
+    /// Override the embedding model key (e.g. `multilingual-e5-small`).
+    #[arg(long = "embed-model", global = true)]
+    embed_model: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -144,6 +151,21 @@ enum Command {
     },
     /// Import memories from a JSONL file.
     Import { file: String },
+    /// Re-embed all memories & rebuild the vector index (migrate embedder).
+    Reindex {
+        /// Embedding provider: `local` (hash) or `onnx` (sentence-transformer).
+        #[arg(long)]
+        provider: Option<String>,
+        /// Model key, e.g. `multilingual-e5-small`, `all-minilm-l6-v2`.
+        #[arg(long)]
+        model: Option<String>,
+        /// Directory to cache downloaded ONNX models.
+        #[arg(long = "cache-dir")]
+        cache_dir: Option<String>,
+        /// Actually perform the migration (otherwise it's a dry-run preview).
+        #[arg(long)]
+        yes: bool,
+    },
     /// Start the MCP server (stdio) for IDE integration.
     Mcp {
         /// Server-wide default for the dynamic token budgeter (per project via
@@ -162,6 +184,15 @@ enum Command {
         /// Override [cache] kb_grounding_threshold (Tier 3). Omit = use config.
         #[arg(long = "cache-kb-grounding")]
         cache_kb_grounding: Option<f32>,
+        /// Override embedding provider for this server: `local` | `onnx`.
+        #[arg(long = "embedder")]
+        embedder: Option<String>,
+        /// Override embedding model key (e.g. `multilingual-e5-small`).
+        #[arg(long = "embed-model")]
+        embed_model: Option<String>,
+        /// Override [conflict] similarity_threshold. Raise to ~0.75 with ONNX.
+        #[arg(long = "conflict-similarity")]
+        conflict_similarity: Option<f32>,
     },
     /// Handle a hook event; reads a JSON payload from stdin (ADR-9).
     Hook { event: String },
@@ -185,6 +216,15 @@ enum Command {
         /// Write `--cache-kb-grounding <f>` into mcp.json (Tier 3 threshold).
         #[arg(long = "cache-kb-grounding")]
         cache_kb_grounding: Option<f32>,
+        /// Write `--embedder <local|onnx>` into mcp.json for this project.
+        #[arg(long = "embedder")]
+        embedder: Option<String>,
+        /// Write `--embed-model <key>` into mcp.json for this project.
+        #[arg(long = "embed-model")]
+        embed_model: Option<String>,
+        /// Write `--conflict-similarity <f>` into mcp.json ([conflict] threshold).
+        #[arg(long = "conflict-similarity")]
+        conflict_similarity: Option<f32>,
     },
 }
 
@@ -215,6 +255,7 @@ fn run() -> Result<()> {
     // CLI subcommands read this default when opening the brain; `yb mcp` also
     // takes it as its server default (while still allowing per-call overrides).
     context::set_default_db(cli.db_memory.clone());
+    context::set_embedder_override(cli.embedder.clone(), cli.embed_model.clone());
     match cli.command {
         Command::Remember {
             content,
@@ -257,12 +298,21 @@ fn run() -> Result<()> {
         },
         Command::Export { scope, out } => cli::export(scope, out),
         Command::Import { file } => cli::import(&file),
+        Command::Reindex {
+            provider,
+            model,
+            cache_dir,
+            yes,
+        } => cli::reindex(provider, model, cache_dir, yes),
         Command::Mcp {
             dynamic_budget,
             budget,
             cache_similarity,
             cache_kb_direct,
             cache_kb_grounding,
+            embedder,
+            embed_model,
+            conflict_similarity,
         } => mcp::run(
             cli.db_memory,
             dynamic_budget,
@@ -272,6 +322,11 @@ fn run() -> Result<()> {
                 kb_direct: cache_kb_direct,
                 kb_grounding: cache_kb_grounding,
             },
+            mcp::EmbedderOverride {
+                provider: embedder,
+                model: embed_model,
+            },
+            conflict_similarity,
         ),
         Command::Hook { event } => hook::run(&event),
         Command::Install {
@@ -281,6 +336,9 @@ fn run() -> Result<()> {
             cache_similarity,
             cache_kb_direct,
             cache_kb_grounding,
+            embedder,
+            embed_model,
+            conflict_similarity,
         } => install::run(
             &ide,
             dynamic_budget,
@@ -288,6 +346,9 @@ fn run() -> Result<()> {
             cache_similarity,
             cache_kb_direct,
             cache_kb_grounding,
+            embedder,
+            embed_model,
+            conflict_similarity,
         ),
     }
 }

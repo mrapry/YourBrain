@@ -71,8 +71,15 @@ impl Default for Storage {
 pub struct Embedding {
     /// "local" (bundled hash embedder by default), "onnx", "ollama", "openai".
     pub provider: String,
+    /// Model key. For `local`: `hash-bow-v1`. For `onnx`: a sentence-transformer
+    /// key such as `multilingual-e5-small`, `all-minilm-l6-v2`, `bge-small-en-v1.5`.
     pub model: String,
+    /// Vector dimension (used by the `local` embedder; the `onnx` backend
+    /// derives its own dimension from the model and takes precedence).
     pub dimension: usize,
+    /// Optional directory to cache downloaded ONNX models (defaults to the
+    /// `fastembed` cache under the current dir when unset).
+    pub cache_dir: Option<String>,
 }
 
 impl Default for Embedding {
@@ -82,6 +89,7 @@ impl Default for Embedding {
             provider: "local".into(),
             model: "hash-bow-v1".into(),
             dimension: 256,
+            cache_dir: None,
         }
     }
 }

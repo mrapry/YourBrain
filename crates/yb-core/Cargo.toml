@@ -17,5 +17,14 @@ regex.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+# Optional ONNX sentence-transformer backend (feature `onnx`). Batteries
+# included: tokenizer + pooling + L2 normalization + HF model download.
+fastembed = { version = "4", optional = true }
+
+[features]
+# Enables the ONNX embedder (OnnxEmbedder) via fastembed/ort. Off by default so
+# the core stays dependency-free and portable.
+onnx = ["dep:fastembed"]
+
 [dev-dependencies]
 tempfile = "3"
