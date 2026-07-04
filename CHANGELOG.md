@@ -4,7 +4,7 @@ All notable changes to YourBrain are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.1] — 2026-07-05
 
 ### Fixed
 
@@ -22,7 +22,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   embedding-dimension lock when an ONNX embedder is pinned. Read-time knobs
   (budget, cache/conflict thresholds) are intentionally left off the hooks.
 
-## [Unreleased] — v0.3.0
+## [0.3.0]
 
 Optional ONNX sentence-transformer embedder for real semantic understanding.
 
