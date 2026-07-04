@@ -15,6 +15,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   foreign key (`Error 787: FOREIGN KEY constraint failed`). Hooks now adopt the
   IDE-provided `session_id` and get-or-create the session (`Brain::ensure_session`)
   before writing any observation.
+- **Claude Code hooks now target the project's database + embedder.**
+  `yb install --ide claude-code` propagates `--db-memory`, `--embedder`, and
+  `--embed-model` onto the generated `yb hook` commands, so captured observations
+  land in the same isolated database as the MCP server and don't fail the
+  embedding-dimension lock when an ONNX embedder is pinned. Read-time knobs
+  (budget, cache/conflict thresholds) are intentionally left off the hooks.
 
 ## [Unreleased] — v0.3.0
 

@@ -195,12 +195,16 @@ fn install_claude_code(
     });
     write_json(Path::new(".mcp.json"), &mcp)?;
 
+    // Hooks must open the same database + embedder as the MCP server, otherwise
+    // capturing an observation fails (wrong db, or a vector-dimension mismatch
+    // against the embedder the db is locked to). Read-time knobs are irrelevant.
+    let h = hook_flags(&args);
     let settings = json!({
         "hooks": {
-            "SessionStart": [ { "hooks": [ { "type": "command", "command": format!("{cmd} hook session_start") } ] } ],
-            "UserPromptSubmit": [ { "hooks": [ { "type": "command", "command": format!("{cmd} hook prompt_submit") } ] } ],
-            "PostToolUse": [ { "hooks": [ { "type": "command", "command": format!("{cmd} hook tool_use") } ] } ],
-            "Stop": [ { "hooks": [ { "type": "command", "command": format!("{cmd} hook session_end") } ] } ]
+            "SessionStart": [ { "hooks": [ { "type": "command", "command": format!("{cmd} hook session_start{h}") } ] } ],
+            "UserPromptSubmit": [ { "hooks": [ { "type": "command", "command": format!("{cmd} hook prompt_submit{h}") } ] } ],
+            "PostToolUse": [ { "hooks": [ { "type": "command", "command": format!("{cmd} hook tool_use{h}") } ] } ],
+            "Stop": [ { "hooks": [ { "type": "command", "command": format!("{cmd} hook session_end{h}") } ] } ]
         }
     });
     write_json(Path::new(".claude/settings.json"), &settings)?;
@@ -220,6 +224,26 @@ fn install_claude_code(
     println!("  .claude/settings.json   (auto-capture hooks)");
     print_db_memory_note(&args);
     Ok(())
+}
+
+/// The `yb hook` flag suffix that mirrors the MCP server's database + embedder.
+///
+/// Hooks record observations into the same isolated `--db-memory`, and must use
+/// the same `--embedder`/`--embed-model` so opening the brain doesn't fail the
+/// embedding-dimension lock (ADR-5). Budget/cache/conflict knobs only affect the
+/// MCP read path, so they're deliberately left out. Returns a leading-space
+/// string (e.g. ` --db-memory foo --embedder onnx`) ready to append after the
+/// hook event; empty when the global database with the default embedder is used.
+fn hook_flags(args: &[String]) -> String {
+    let mut out = String::new();
+    for flag in ["--db-memory", "--embedder", "--embed-model"] {
+        if let Some(i) = args.iter().position(|a| a == flag) {
+            if let Some(v) = args.get(i + 1) {
+                out.push_str(&format!(" {flag} {v}"));
+            }
+        }
+    }
+    out
 }
 
 #[cfg(windows)]
