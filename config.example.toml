@@ -59,3 +59,39 @@ exclude_patterns = ["**/.env", "**/.env.*", "**/secrets/**", "**/*.pem", "**/*.k
 [daemon]
 idle_shutdown_secs = 600
 embed_batch_size = 10
+
+[rerank]
+# Lexical (BM25-style) reranking on top of hybrid RRF fusion. Set enabled=false
+# to restore the exact v0.1.0 recall ordering.
+enabled = true
+candidate_pool_factor = 4  # fetch limit*factor candidates before reranking
+lexical_weight = 0.5       # blend of lexical vs fused/metadata score (0..1)
+
+[token_budget]
+# Dynamic compression of recalled memories to fit a tighter token budget.
+# Disabled by default; enable per call via the `dynamic_budget` MCP argument or
+# `yb recall --dynamic-budget`.
+enabled = false
+strategy = "extractive"    # "extractive" | "ultra"
+max_tokens = 0             # budget saat recall; 0 = pakai recall.max_tokens.
+                           # Di-override oleh nilai eksplisit --budget / arg MCP token_budget.
+
+[guardrail]
+# Fact-checking of a drafted answer against the knowledge base (yb_validate).
+support_threshold = 0.35   # min evidence score for a claim to count as supported
+evidence_top_k = 5
+
+[cache]
+# Layered semantic cache grounded in the knowledge base.
+# These thresholds are DEFAULTS. They can be overridden per-project via the
+# mcp.json launch flags (`yb mcp --cache-similarity/--cache-kb-direct/
+# --cache-kb-grounding`) or per-call via the `yb_cache_get` arguments
+# (`similarity_threshold`, `kb_direct_threshold`, `kb_grounding_threshold`) /
+# `yb cache get --threshold`. Precedence: per-call > mcp.json flag > this config.
+enabled = true
+similarity_threshold = 0.85  # Tier 1: Q&A cache hit
+kb_direct_threshold = 0.80   # Tier 2: answer directly from KB (bypass LLM)
+kb_grounding_threshold = 0.50 # Tier 3: return KB as grounding context
+use_kb = true                # false = Tier 1 only (no KB grounding)
+ttl_secs = 3600
+max_entries = 500

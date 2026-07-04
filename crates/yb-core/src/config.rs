@@ -22,6 +22,10 @@ pub struct Config {
     pub compression: Compression,
     pub privacy: Privacy,
     pub daemon: Daemon,
+    pub rerank: Rerank,
+    pub token_budget: TokenBudget,
+    pub guardrail: Guardrail,
+    pub cache: Cache,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,6 +236,104 @@ impl Default for Daemon {
         Self {
             idle_shutdown_secs: 600,
             embed_batch_size: 10,
+        }
+    }
+}
+
+/// Lexical (BM25-style) reranking applied on top of the fused/metadata score.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Rerank {
+    /// When false, recall behaves exactly like v0.1.0 (no lexical rerank).
+    pub enabled: bool,
+    /// Candidate pool size multiplier over the requested limit before reranking.
+    pub candidate_pool_factor: usize,
+    /// Blend weight of the lexical score against the fused/metadata score (0..1).
+    pub lexical_weight: f32,
+}
+
+impl Default for Rerank {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            candidate_pool_factor: 4,
+            lexical_weight: 0.5,
+        }
+    }
+}
+
+/// Dynamic token budgeting: opt-in compression of recalled memories to fit a
+/// tighter budget. Disabled by default so recall output is unchanged.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TokenBudget {
+    /// Master switch (default OFF).
+    pub enabled: bool,
+    /// "extractive" (query-aware sentence selection) or "ultra" (rule-based).
+    pub strategy: String,
+    /// Token budget override; 0 means fall back to `recall.max_tokens`.
+    pub max_tokens: usize,
+}
+
+impl Default for TokenBudget {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            strategy: "extractive".into(),
+            max_tokens: 0,
+        }
+    }
+}
+
+/// Guardrail / fact-checking thresholds (grounding of a drafted answer vs KB).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Guardrail {
+    /// Minimum evidence score for a claim to count as supported. Tuned for the
+    /// default hash embedder; raise when using an ONNX sentence-transformer.
+    pub support_threshold: f32,
+    /// How many KB memories to gather as evidence per validation.
+    pub evidence_top_k: usize,
+}
+
+impl Default for Guardrail {
+    fn default() -> Self {
+        Self {
+            support_threshold: 0.35,
+            evidence_top_k: 5,
+        }
+    }
+}
+
+/// Layered semantic cache grounded in the knowledge base.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Cache {
+    pub enabled: bool,
+    /// Tier 1: similarity to a stored Q&A entry that counts as a cache hit.
+    pub similarity_threshold: f32,
+    /// Tier 2: KB match strong enough to answer directly (bypass the LLM).
+    pub kb_direct_threshold: f32,
+    /// Tier 3: KB match returned as grounding context (still go to the LLM).
+    pub kb_grounding_threshold: f32,
+    /// Whether to consult the knowledge base (Tier 2/3), not just Q&A cache.
+    pub use_kb: bool,
+    /// Time-to-live for cached answers, in seconds.
+    pub ttl_secs: i64,
+    /// Cap on stored cache entries (oldest evicted first).
+    pub max_entries: usize,
+}
+
+impl Default for Cache {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            similarity_threshold: 0.85,
+            kb_direct_threshold: 0.80,
+            kb_grounding_threshold: 0.50,
+            use_kb: true,
+            ttl_secs: 3600,
+            max_entries: 500,
         }
     }
 }

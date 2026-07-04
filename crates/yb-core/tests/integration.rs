@@ -41,6 +41,7 @@ fn full_flow_persists_across_reopen() {
             DetailLevel::Summary,
             200,
             None,
+            false,
         )
         .unwrap();
     assert!(
@@ -127,7 +128,7 @@ fn export_import_roundtrip() {
     }
 
     let res = b2
-        .recall("authentication", 5, DetailLevel::Summary, 200, None)
+        .recall("authentication", 5, DetailLevel::Summary, 200, None, false)
         .unwrap();
     assert!(!res.output.ids.is_empty());
 }
@@ -146,11 +147,102 @@ fn recall_respects_token_budget() {
         .ok();
     }
     let res = b
-        .recall("system component data", 20, DetailLevel::Summary, 120, None)
+        .recall(
+            "system component data",
+            20,
+            DetailLevel::Summary,
+            120,
+            None,
+            false,
+        )
         .unwrap();
     assert!(
         res.output.tokens_used <= 120,
         "budget exceeded: {}",
         res.output.tokens_used
     );
+
+    // Dynamic budgeter must also respect the cap.
+    let res_dyn = b
+        .recall(
+            "system component data",
+            20,
+            DetailLevel::Summary,
+            120,
+            None,
+            true,
+        )
+        .unwrap();
+    assert!(
+        res_dyn.output.tokens_used <= 120,
+        "dynamic budget exceeded: {}",
+        res_dyn.output.tokens_used
+    );
+}
+
+#[test]
+fn cache_tiers_and_auto_invalidate() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut b = brain_at(tmp.path());
+    let id = match b
+        .remember(
+            "The authentication service uses JWT tokens stored in Redis with a 15 minute expiry",
+            RememberOptions::default(),
+        )
+        .unwrap()
+    {
+        RememberOutcome::Stored { id } => id,
+        other => panic!("expected stored: {other:?}"),
+    };
+    b.save().unwrap();
+
+    // Tier 1: a stored Q&A answer is returned for a near-identical query.
+    b.cache_put(
+        "how does auth work",
+        "Auth uses JWT in Redis.",
+        vec![id.clone()],
+        None,
+        None,
+    )
+    .unwrap();
+    let ov = yb_core::brain::CacheOverrides::default();
+    match b.cache_get("how does auth work", None, ov).unwrap() {
+        yb_core::brain::CacheLookup::Hit { source, .. } => {
+            assert_eq!(source, yb_core::brain::CacheSource::Cache);
+        }
+        other => panic!("expected Tier 1 cache hit, got {other:?}"),
+    }
+
+    // Auto-invalidate: forgetting the source memory drops the cached answer.
+    b.forget(&id).unwrap();
+    assert!(matches!(
+        b.cache_get("how does auth work", None, ov).unwrap(),
+        yb_core::brain::CacheLookup::Miss
+    ));
+}
+
+#[test]
+fn validate_flags_unsupported_claim() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut b = brain_at(tmp.path());
+    b.remember(
+        "The backend API is built with Rust using the Axum web framework",
+        RememberOptions::default(),
+    )
+    .unwrap();
+    b.save().unwrap();
+
+    let report = b
+        .validate(
+            "The backend uses Rust and Axum. It also runs on a quantum blockchain ledger.",
+            Some("backend framework"),
+            None,
+            None,
+        )
+        .unwrap();
+    assert!(!report.grounded);
+    assert!(report
+        .unsupported
+        .iter()
+        .any(|c| c.to_lowercase().contains("blockchain")));
 }

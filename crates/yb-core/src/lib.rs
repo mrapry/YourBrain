@@ -6,12 +6,15 @@
 //!
 //! ## Module map
 //! - [`memory`] — domain types (Memory, Edge, Session, …).
-//! - [`store`] — SQLite persistence (schema, FTS5, embed queue, conflicts).
+//! - [`store`] — SQLite persistence (schema, FTS5, embed queue, conflicts, cache).
 //! - [`embed`] — embedding trait + dependency-free hash backend.
 //! - [`vector`] — vector index trait + flat cosine backend.
 //! - [`compress`] — rule-based compression into three levels.
 //! - [`classify`] — privacy preprocessing + rule-based classification.
 //! - [`search`] — RRF fusion, re-ranking, token-budgeted recall.
+//! - [`rerank`] — lexical (BM25) reranking trait + default backend.
+//! - [`budget`] — dynamic token budgeting / extractive summarization.
+//! - [`guardrail`] — answer fact-checking against the knowledge base.
 //! - [`conflict`] — tiered conflict detection and resolution.
 //! - [`config`] — configuration types.
 //! - [`brain`] — the high-level engine tying it all together.
@@ -23,13 +26,16 @@
 //! anywhere without a C++/ONNX toolchain.
 
 pub mod brain;
+pub mod budget;
 pub mod classify;
 pub mod compress;
 pub mod config;
 pub mod conflict;
 pub mod embed;
 pub mod error;
+pub mod guardrail;
 pub mod memory;
+pub mod rerank;
 pub mod search;
 pub mod store;
 pub mod vector;

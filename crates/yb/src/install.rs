@@ -47,28 +47,70 @@ fn detect_project_name() -> Option<String> {
         .and_then(context::sanitize_db_name)
 }
 
+/// Per-project cache-threshold overrides written into the generated mcp.json.
+#[derive(Clone, Copy, Default)]
+pub struct CacheFlags {
+    pub similarity: Option<f32>,
+    pub kb_direct: Option<f32>,
+    pub kb_grounding: Option<f32>,
+}
+
 /// Build the `yb mcp` argument list, isolating into `--db-memory <name>` when a
-/// project name can be detected.
-fn mcp_args() -> Vec<String> {
+/// project name can be detected, and optionally pinning this project's dynamic
+/// token budgeter, budget, and cache thresholds (written into the mcp.json).
+fn mcp_args(dynamic_budget: bool, budget: usize, cache: CacheFlags) -> Vec<String> {
     let mut args = vec!["mcp".to_string()];
     if let Some(name) = detect_project_name() {
         args.push("--db-memory".to_string());
         args.push(name);
     }
+    if dynamic_budget {
+        args.push("--dynamic-budget".to_string());
+        args.push("true".to_string());
+    }
+    if budget > 0 {
+        args.push("--budget".to_string());
+        args.push(budget.to_string());
+    }
+    if let Some(v) = cache.similarity {
+        args.push("--cache-similarity".to_string());
+        args.push(v.to_string());
+    }
+    if let Some(v) = cache.kb_direct {
+        args.push("--cache-kb-direct".to_string());
+        args.push(v.to_string());
+    }
+    if let Some(v) = cache.kb_grounding {
+        args.push("--cache-kb-grounding".to_string());
+        args.push(v.to_string());
+    }
     args
 }
 
-pub fn run(ide: &str) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+pub fn run(
+    ide: &str,
+    dynamic_budget: bool,
+    budget: usize,
+    cache_similarity: Option<f32>,
+    cache_kb_direct: Option<f32>,
+    cache_kb_grounding: Option<f32>,
+) -> Result<()> {
+    let cache = CacheFlags {
+        similarity: cache_similarity,
+        kb_direct: cache_kb_direct,
+        kb_grounding: cache_kb_grounding,
+    };
     match ide {
-        "cursor" => install_cursor(),
-        "claude-code" | "claude" => install_claude_code(),
+        "cursor" => install_cursor(dynamic_budget, budget, cache),
+        "claude-code" | "claude" => install_claude_code(dynamic_budget, budget, cache),
         other => anyhow::bail!("unsupported IDE `{other}` (supported: cursor, claude-code)"),
     }
 }
 
-fn install_cursor() -> Result<()> {
+fn install_cursor(dynamic_budget: bool, budget: usize, cache: CacheFlags) -> Result<()> {
     let cmd = yb_command();
-    let args = mcp_args();
+    let args = mcp_args(dynamic_budget, budget, cache);
     let mcp = json!({
         "mcpServers": {
             "yourbrain": { "command": cmd, "args": args }
@@ -82,20 +124,26 @@ Before answering questions about this project, call the `yb_recall` tool with a
 relevant query to load prior context. When the user establishes a durable fact,
 decision, or preference, call `yb_remember` to persist it. If `yb_remember`
 returns a conflict, present the options to the user and call `yb_resolve`.
+
+For repeat or clearly answerable questions, call `yb_cache_get` FIRST: reuse a
+`hit` answer directly, or use `grounding` memories as context before answering.
+After composing a fresh answer worth reusing, store it with `yb_cache_put`,
+passing the `source_ids` of the memories that grounded it. Before presenting an
+important factual answer, call `yb_validate` and revise any unsupported claims.
 ";
     append_or_create(Path::new(".cursorrules"), cursorrules)?;
 
     println!("Installed Cursor integration:");
     println!("  .cursor/mcp.json  (MCP server `yourbrain`)");
-    println!("  .cursorrules      (recall/remember guidance)");
+    println!("  .cursorrules      (recall/remember/cache/validate guidance)");
     print_db_memory_note(&args);
     println!("\nNote: Cursor is MCP-only (no hooks). Recall is AI-initiated — see ADR-4.");
     Ok(())
 }
 
-fn install_claude_code() -> Result<()> {
+fn install_claude_code(dynamic_budget: bool, budget: usize, cache: CacheFlags) -> Result<()> {
     let cmd = yb_command();
-    let args = mcp_args();
+    let args = mcp_args(dynamic_budget, budget, cache);
     let mcp = json!({
         "mcpServers": {
             "yourbrain": { "command": cmd, "args": args }
@@ -141,7 +189,8 @@ fn which_sh() -> Option<()> {
     None
 }
 
-/// Report whether memories are isolated into a named database or shared globally.
+/// Report whether memories are isolated into a named database or shared globally,
+/// plus any per-project token-budget pinned into the generated config.
 fn print_db_memory_note(args: &[String]) {
     match args.iter().position(|a| a == "--db-memory") {
         Some(i) if i + 1 < args.len() => {
@@ -149,6 +198,26 @@ fn print_db_memory_note(args: &[String]) {
             println!("  Edit .cursor/mcp.json (or .mcp.json) to change or remove it for the global database.");
         }
         _ => println!("\nUsing the shared/global memory database (no db_memory detected)."),
+    }
+    if let Some(i) = args.iter().position(|a| a == "--dynamic-budget") {
+        let v = args.get(i + 1).map(String::as_str).unwrap_or("true");
+        println!("Dynamic token budgeter pinned for this project: {v}.");
+    }
+    if let Some(i) = args.iter().position(|a| a == "--budget") {
+        if let Some(n) = args.get(i + 1) {
+            println!("Token budget pinned for this project: {n}.");
+        }
+    }
+    for (flag, label) in [
+        ("--cache-similarity", "cache Tier-1 similarity"),
+        ("--cache-kb-direct", "cache Tier-2 kb_direct"),
+        ("--cache-kb-grounding", "cache Tier-3 kb_grounding"),
+    ] {
+        if let Some(i) = args.iter().position(|a| a == flag) {
+            if let Some(v) = args.get(i + 1) {
+                println!("Pinned {label} threshold: {v}.");
+            }
+        }
     }
 }
 

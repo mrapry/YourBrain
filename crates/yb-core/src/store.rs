@@ -604,6 +604,109 @@ impl Store {
         }
         Ok(out)
     }
+
+    // ---- semantic cache (v0.2) -----------------------------------------
+
+    /// Insert a cache entry (Q&A answer + query embedding + KB provenance).
+    pub fn cache_put(&self, e: &CacheEntry) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO cache(id, query, query_embedding, answer, source_ids, room, created_at, expires_at, hits)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+             ON CONFLICT(id) DO UPDATE SET
+                query=excluded.query, query_embedding=excluded.query_embedding,
+                answer=excluded.answer, source_ids=excluded.source_ids, room=excluded.room,
+                created_at=excluded.created_at, expires_at=excluded.expires_at",
+            params![
+                e.id,
+                e.query,
+                embedding_to_blob(&e.query_embedding),
+                e.answer,
+                json_arr(&e.source_ids),
+                e.room,
+                e.created_at.to_rfc3339(),
+                e.expires_at.map(|d| d.to_rfc3339()),
+                e.hits,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Return all non-expired cache entries (optionally scoped to a room). The
+    /// caller computes cosine similarity against these (the cache is small).
+    pub fn cache_entries(&self, room: Option<&str>) -> Result<Vec<CacheEntry>> {
+        let now = Utc::now().to_rfc3339();
+        let mut stmt = self.conn.prepare(
+            "SELECT id, query, query_embedding, answer, source_ids, room, created_at, expires_at, hits
+             FROM cache
+             WHERE (expires_at IS NULL OR expires_at > :now)
+               AND (:room IS NULL OR room = :room)
+             ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::named_params! { ":now": now, ":room": room },
+            row_to_cache,
+        )?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn cache_touch(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("UPDATE cache SET hits = hits + 1 WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Clear the cache (optionally only a given room). Returns rows removed.
+    pub fn cache_clear(&self, room: Option<&str>) -> Result<usize> {
+        let n = match room {
+            Some(r) => self
+                .conn
+                .execute("DELETE FROM cache WHERE room = ?1", [r])?,
+            None => self.conn.execute("DELETE FROM cache", [])?,
+        };
+        Ok(n)
+    }
+
+    /// Delete expired entries. Returns rows removed.
+    pub fn cache_purge_expired(&self) -> Result<usize> {
+        let n = self.conn.execute(
+            "DELETE FROM cache WHERE expires_at IS NOT NULL AND expires_at <= ?1",
+            [Utc::now().to_rfc3339()],
+        )?;
+        Ok(n)
+    }
+
+    /// Invalidate cache entries whose provenance references `memory_id`, keeping
+    /// the cache consistent when a source memory changes (supersede/forget/dispute).
+    pub fn cache_invalidate_by_source(&self, memory_id: &str) -> Result<usize> {
+        // source_ids is a JSON array of quoted ids, so a quoted substring match
+        // is exact enough (ULIDs never contain the surrounding quotes).
+        let needle = format!("%\"{memory_id}\"%");
+        let n = self
+            .conn
+            .execute("DELETE FROM cache WHERE source_ids LIKE ?1", [needle])?;
+        Ok(n)
+    }
+
+    pub fn cache_count(&self) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row("SELECT COUNT(*) FROM cache", [], |r| r.get(0))?)
+    }
+
+    /// Evict the oldest entries until at most `max_entries` remain.
+    pub fn cache_evict_to(&self, max_entries: usize) -> Result<usize> {
+        let n = self.conn.execute(
+            "DELETE FROM cache WHERE id IN (
+                SELECT id FROM cache ORDER BY created_at DESC LIMIT -1 OFFSET ?1
+            )",
+            [max_entries as i64],
+        )?;
+        Ok(n)
+    }
 }
 
 /// A single audit-log entry for a memory.
@@ -613,6 +716,36 @@ pub struct TimelineEvent {
     pub detail: Option<String>,
     pub actor: String,
     pub created_at: DateTime<Utc>,
+}
+
+/// A semantic-cache entry: a query, its embedding, the cached answer, and the
+/// ids of the knowledge-base memories that grounded it (for auto-invalidation).
+#[derive(Debug, Clone)]
+pub struct CacheEntry {
+    pub id: String,
+    pub query: String,
+    pub query_embedding: Vec<f32>,
+    pub answer: String,
+    pub source_ids: Vec<String>,
+    pub room: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub hits: i64,
+}
+
+fn row_to_cache(r: &Row) -> rusqlite::Result<CacheEntry> {
+    let blob: Option<Vec<u8>> = r.get(2)?;
+    Ok(CacheEntry {
+        id: r.get(0)?,
+        query: r.get(1)?,
+        query_embedding: blob.map(|b| blob_to_embedding(&b)).unwrap_or_default(),
+        answer: r.get(3)?,
+        source_ids: parse_json_arr(r, 4)?,
+        room: r.get(5)?,
+        created_at: parse_dt_row(r, 6)?,
+        expires_at: parse_opt_dt_row(r, 7)?,
+        hits: r.get(8)?,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -905,6 +1038,19 @@ CREATE TABLE IF NOT EXISTS timeline (
     actor TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS cache (
+    id TEXT PRIMARY KEY,
+    query TEXT NOT NULL,
+    query_embedding BLOB,
+    answer TEXT NOT NULL,
+    source_ids TEXT,
+    room TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT,
+    hits INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_cache_room ON cache(room);
 
 CREATE INDEX IF NOT EXISTS idx_memories_state ON memories(state);
 CREATE INDEX IF NOT EXISTS idx_memories_room ON memories(room);

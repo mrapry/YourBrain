@@ -50,10 +50,14 @@ enum Command {
         /// headline | summary | full
         #[arg(long, default_value = "summary")]
         detail: String,
-        #[arg(long, default_value_t = 200)]
+        /// Token budget; 0 = use [token_budget]/[recall] config.
+        #[arg(long, default_value_t = 0)]
         budget: usize,
         #[arg(long)]
         room: Option<String>,
+        /// Condense recalled memories to fit the budget (dynamic token budgeter).
+        #[arg(long = "dynamic-budget")]
+        dynamic_budget: bool,
     },
     /// Resolve a pending conflict.
     Resolve {
@@ -100,6 +104,32 @@ enum Command {
     },
     /// Show statistics and health info.
     Stats,
+    /// Validate a drafted answer against the knowledge base (anti-hallucination).
+    Validate {
+        /// The drafted answer to fact-check.
+        answer: String,
+        /// Optional query used to gather evidence (defaults to the answer).
+        #[arg(long)]
+        query: Option<String>,
+    },
+    /// Semantic cache operations: get | put | clear.
+    Cache {
+        /// get | put | clear
+        action: String,
+        /// The query (for get/put).
+        #[arg(long)]
+        query: Option<String>,
+        /// The answer to cache (for put).
+        #[arg(long)]
+        answer: Option<String>,
+        /// Override Tier-1 similarity threshold for `get` (research/tuning).
+        #[arg(long)]
+        threshold: Option<f32>,
+        /// KB memory ids that grounded the answer (for put; repeatable) — enables
+        /// auto-invalidation when those memories change.
+        #[arg(long = "source-id")]
+        source_ids: Vec<String>,
+    },
     /// Configuration commands.
     Config {
         #[command(subcommand)]
@@ -115,13 +145,46 @@ enum Command {
     /// Import memories from a JSONL file.
     Import { file: String },
     /// Start the MCP server (stdio) for IDE integration.
-    Mcp,
+    Mcp {
+        /// Server-wide default for the dynamic token budgeter (per project via
+        /// its own mcp.json). Omit to use the [token_budget] config.
+        #[arg(long = "dynamic-budget")]
+        dynamic_budget: Option<bool>,
+        /// Server-wide default token budget; 0 = use config.
+        #[arg(long, default_value_t = 0)]
+        budget: usize,
+        /// Override [cache] similarity_threshold (Tier 1). Omit = use config.
+        #[arg(long = "cache-similarity")]
+        cache_similarity: Option<f32>,
+        /// Override [cache] kb_direct_threshold (Tier 2). Omit = use config.
+        #[arg(long = "cache-kb-direct")]
+        cache_kb_direct: Option<f32>,
+        /// Override [cache] kb_grounding_threshold (Tier 3). Omit = use config.
+        #[arg(long = "cache-kb-grounding")]
+        cache_kb_grounding: Option<f32>,
+    },
     /// Handle a hook event; reads a JSON payload from stdin (ADR-9).
     Hook { event: String },
     /// Install IDE integration (cursor | claude-code).
     Install {
         #[arg(long)]
         ide: String,
+        /// Write `--dynamic-budget true` into the generated mcp.json so this
+        /// project always uses the dynamic token budgeter.
+        #[arg(long = "dynamic-budget")]
+        dynamic_budget: bool,
+        /// Write a fixed `--budget N` into the generated mcp.json (0 = omit).
+        #[arg(long, default_value_t = 0)]
+        budget: usize,
+        /// Write `--cache-similarity <f>` into mcp.json (Tier 1 threshold).
+        #[arg(long = "cache-similarity")]
+        cache_similarity: Option<f32>,
+        /// Write `--cache-kb-direct <f>` into mcp.json (Tier 2 threshold).
+        #[arg(long = "cache-kb-direct")]
+        cache_kb_direct: Option<f32>,
+        /// Write `--cache-kb-grounding <f>` into mcp.json (Tier 3 threshold).
+        #[arg(long = "cache-kb-grounding")]
+        cache_kb_grounding: Option<f32>,
     },
 }
 
@@ -165,7 +228,8 @@ fn run() -> Result<()> {
             detail,
             budget,
             room,
-        } => cli::recall(&query, limit, &detail, budget, room),
+            dynamic_budget,
+        } => cli::recall(&query, limit, &detail, budget, room, dynamic_budget),
         Command::Resolve {
             conflict_id,
             action,
@@ -180,13 +244,50 @@ fn run() -> Result<()> {
         Command::Conflicts => cli::conflicts(),
         Command::Timeline { memory_id, limit } => cli::timeline(&memory_id, limit),
         Command::Stats => cli::stats(),
+        Command::Validate { answer, query } => cli::validate(&answer, query),
+        Command::Cache {
+            action,
+            query,
+            answer,
+            threshold,
+            source_ids,
+        } => cli::cache(&action, query, answer, threshold, source_ids),
         Command::Config { cmd } => match cmd {
             ConfigCmd::Show => cli::config_show(),
         },
         Command::Export { scope, out } => cli::export(scope, out),
         Command::Import { file } => cli::import(&file),
-        Command::Mcp => mcp::run(cli.db_memory),
+        Command::Mcp {
+            dynamic_budget,
+            budget,
+            cache_similarity,
+            cache_kb_direct,
+            cache_kb_grounding,
+        } => mcp::run(
+            cli.db_memory,
+            dynamic_budget,
+            budget,
+            yb_core::brain::CacheOverrides {
+                similarity: cache_similarity,
+                kb_direct: cache_kb_direct,
+                kb_grounding: cache_kb_grounding,
+            },
+        ),
         Command::Hook { event } => hook::run(&event),
-        Command::Install { ide } => install::run(&ide),
+        Command::Install {
+            ide,
+            dynamic_budget,
+            budget,
+            cache_similarity,
+            cache_kb_direct,
+            cache_kb_grounding,
+        } => install::run(
+            &ide,
+            dynamic_budget,
+            budget,
+            cache_similarity,
+            cache_kb_direct,
+            cache_kb_grounding,
+        ),
     }
 }

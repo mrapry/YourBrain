@@ -34,6 +34,10 @@ YourBrain's differentiator is the **conflict engine**:
 | Hybrid search | SQLite **FTS5** keyword search fused with **vector** similarity via Reciprocal Rank Fusion, then re-ranked by recency/importance/confidence. |
 | Compression | Rule-based, near-lossless compression that **preserves code, paths, and URLs**, plus lossy `summary`/`headline` levels for token-efficient recall. |
 | Token budgeting | Recall fits within a configurable token budget, giving the top hits more detail and the rest a headline. |
+| Reranking | A lexical (BM25) rerank stage sharpens query relevance on top of the RRF fusion. Pluggable via a `Reranker` trait. |
+| Dynamic budgeting | Opt-in query-aware extractive summarization condenses recalled memories to fit tighter budgets (`Summarizer` trait). |
+| Guardrail | `yb validate` fact-checks a drafted answer against the knowledge base and flags unsupported claims (`Validator` trait). |
+| Semantic cache | A layered cache grounded in the knowledge base: prior Q&A, direct KB answers, or KB grounding — with provenance-based auto-invalidation. |
 | Privacy | Strips `<private>…</private>` blocks and redacts secrets (API keys, tokens, connection strings) before anything is stored. |
 | Team knowledge | Endorse / dispute memories; confidence is a consensus score. Export/import as JSONL. |
 | IDE integration | An **MCP server** (`yb mcp`) for Cursor / Claude Code, plus **hooks** (`yb hook`) for auto-capture. |
@@ -120,8 +124,10 @@ at the current `yb` binary. See the
 | Command | Description |
 |---|---|
 | `yb remember <content> [--tag T]… [--room R] [--scope personal\|team]` | Store a memory (with conflict check). |
-| `yb recall <query> [--limit N] [--detail headline\|summary\|full] [--budget N]` | Search & retrieve. |
+| `yb recall <query> [--limit N] [--detail headline\|summary\|full] [--budget N] [--dynamic-budget]` | Search & retrieve. |
 | `yb resolve <id> --action replace\|keep_both\|discard_new\|merge [--content …]` | Resolve a conflict. |
+| `yb validate <answer> [--query Q]` | Fact-check an answer against the knowledge base. |
+| `yb cache get\|put\|clear [--query Q] [--answer A] [--threshold F] [--source-id ID]…` | Layered semantic cache (`--threshold` overrides Tier-1 similarity). |
 | `yb list [--room R] [--limit N]` | List memories. |
 | `yb get <id>` | Show full memory + relations. |
 | `yb forget <id>` | Archive a memory. |
@@ -131,9 +137,9 @@ at the current `yb` binary. See the
 | `yb stats` | Statistics & health. |
 | `yb export [--scope team] [--out file]` / `yb import <file>` | JSONL export/import. |
 | `yb config show` | Show config & paths. |
-| `yb mcp` | Start the MCP stdio server. |
+| `yb mcp [--dynamic-budget true\|false] [--budget N] [--cache-* F]` | Start the MCP stdio server (per-project budget & cache thresholds). |
 | `yb hook <event>` | Handle an IDE hook (reads JSON from stdin). |
-| `yb install --ide cursor\|claude-code` | Generate IDE integration files. |
+| `yb install --ide cursor\|claude-code [--dynamic-budget] [--budget N] [--cache-* F]` | Generate IDE integration files. |
 
 ## Configuration
 
@@ -163,6 +169,71 @@ For IDE integration this is wired through the MCP server config (see below):
 `yb install --ide cursor` auto-detects the project name (git repo folder) and
 writes `--db-memory <name>` into the generated config. Individual MCP tool calls
 may also override it with their own `db_memory` argument.
+
+## Retrieval, guardrail & cache (v0.2)
+
+These capabilities are pure-Rust and embedder-independent, each behind a trait
+so an LLM/ONNX backend can be dropped in later. Behavior is controlled by config
+so it can be toggled without a rebuild.
+
+- **Reranker** (`[rerank]`, on by default). After RRF fusion, a BM25-style
+  lexical rerank reorders the candidate pool for tighter query relevance. Set
+  `[rerank] enabled = false` to restore the exact v0.1.0 ordering.
+- **Dynamic token budgeter** (`[token_budget]`, off by default). When enabled —
+  via config, the `--dynamic-budget` flag, or the `dynamic_budget` MCP argument —
+  recalled memories are condensed with a query-aware extractive summarizer so
+  more relevant signal fits into a tight budget.
+- **Guardrail** (`yb validate` / `yb_validate`). Checks each claim in a drafted
+  answer against the knowledge base and reports unsupported claims, to catch
+  hallucinations before an answer is presented.
+- **Semantic cache** (`yb cache` / `yb_cache_*`, `[cache]`). A layered lookup:
+  1. Tier 1 — a previously cached Q&A answer (query-embedding match).
+  2. Tier 2 — a direct answer from strongly-matching KB documents.
+  3. Tier 3 — moderately-matching KB documents returned as grounding context.
+
+  Cache entries record the `source_ids` of the memories that grounded them and
+  are **auto-invalidated** when a source memory is superseded, forgotten, or
+  disputed — so the cache never serves an answer that the knowledge base has
+  moved on from.
+
+The MCP server exposes four new tools alongside the originals: `yb_validate`,
+`yb_cache_get`, `yb_cache_put`, and `yb_cache_clear`. The generated `.cursorrules`
+guides the assistant to consult the cache first and validate important answers.
+
+### Per-project token budget
+
+Because each project has its own `.cursor/mcp.json` (with its own `--db-memory`),
+the dynamic token budgeter can be enabled/disabled **per project** by launching
+the server with a flag — no editing of the shared `config.toml` required:
+
+```bash
+# Pin this project's server to always condense recall to ~300 tokens:
+yb install --ide cursor --dynamic-budget --budget 300
+# → writes: "args": ["mcp", "--db-memory", "<project>", "--dynamic-budget", "true", "--budget", "300"]
+```
+
+Precedence (highest wins): per-call `dynamic_budget` / `max_tokens` argument on
+`yb_recall` → server flag in this project's `mcp.json` → `[token_budget]` /
+`[recall]` in the shared `config.toml`.
+
+### Per-project cache thresholds (tuning knobs)
+
+The semantic cache thresholds in `[cache]` are only **defaults**. When researching
+retrieval quality you often need to sweep them without editing the shared config
+or restarting anything. Two override levels are available:
+
+```bash
+# Per-project default, written into this project's mcp.json:
+yb install --ide cursor --cache-similarity 0.6 --cache-kb-direct 0.75 --cache-kb-grounding 0.4
+# → args: ["mcp", "--db-memory", "<project>", "--cache-similarity", "0.6", …]
+```
+
+For **live tuning** (no restart), pass the thresholds per call — via the
+`yb_cache_get` arguments `similarity_threshold` / `kb_direct_threshold` /
+`kb_grounding_threshold`, or `yb cache get --query … --threshold 0.6`.
+
+Precedence (highest wins): per-call argument → server flag in `mcp.json` →
+`[cache]` in `config.toml`.
 
 ## Documentation
 

@@ -84,6 +84,7 @@ pub fn recall(
     detail: &str,
     budget: usize,
     room: Option<String>,
+    dynamic: bool,
 ) -> Result<()> {
     let brain = context::open_brain()?;
     let res = brain.recall(
@@ -92,6 +93,7 @@ pub fn recall(
         DetailLevel::parse(detail),
         budget,
         room.as_deref(),
+        dynamic,
     )?;
     println!(
         "# YB Recall ({} memories, {} tokens)",
@@ -245,6 +247,7 @@ pub fn stats() -> Result<()> {
     let brain = context::open_brain()?;
     let s = brain.stats()?;
     println!("YourBrain statistics");
+    println!("  yb version:        {}", env!("CARGO_PKG_VERSION"));
     println!("  total memories:    {}", s.total);
     println!("  active:            {}", s.active);
     println!("  superseded:        {}", s.superseded);
@@ -257,6 +260,7 @@ pub fn stats() -> Result<()> {
 
 pub fn config_show() -> Result<()> {
     let cfg = context::load_config()?;
+    println!("# yb version: {}", env!("CARGO_PKG_VERSION"));
     println!("{}", cfg.to_toml());
     println!("data dir: {}", context::data_dir()?.display());
     println!("active db: {}", context::active_db_dir()?.display());
@@ -303,6 +307,97 @@ pub fn import(file: &str) -> Result<()> {
     }
     brain.save()?;
     println!("imported: {stored} stored, {skipped} skipped (already present)");
+    Ok(())
+}
+
+pub fn validate(answer: &str, query: Option<String>) -> Result<()> {
+    let brain = context::open_brain()?;
+    let report = brain.validate(answer, query.as_deref(), None, None)?;
+    println!(
+        "Grounding: {:.0}%  ({})",
+        report.grounding_score * 100.0,
+        if report.grounded {
+            "grounded"
+        } else {
+            "UNSUPPORTED CLAIMS FOUND"
+        }
+    );
+    for c in &report.claims {
+        let mark = if c.supported { "ok " } else { "!! " };
+        println!("  [{mark}] {:.0}%  {}", c.score * 100.0, c.text);
+    }
+    if !report.unsupported.is_empty() {
+        println!("\nUnsupported claims (revise or verify against the knowledge base):");
+        for u in &report.unsupported {
+            println!("  - {u}");
+        }
+    }
+    Ok(())
+}
+
+pub fn cache(
+    action: &str,
+    query: Option<String>,
+    answer: Option<String>,
+    threshold: Option<f32>,
+    source_ids: Vec<String>,
+) -> Result<()> {
+    use yb_core::brain::{CacheLookup, CacheOverrides};
+    let brain = context::open_brain()?;
+    match action {
+        "get" => {
+            let q = query.ok_or_else(|| anyhow::anyhow!("`get` requires a query"))?;
+            let overrides = CacheOverrides {
+                similarity: threshold,
+                ..Default::default()
+            };
+            match brain.cache_get(&q, None, overrides)? {
+                CacheLookup::Hit {
+                    answer,
+                    source,
+                    similarity,
+                    memory_ids,
+                } => {
+                    println!(
+                        "HIT [{}] ({:.0}% match)",
+                        source.as_str(),
+                        similarity * 100.0
+                    );
+                    if !memory_ids.is_empty() {
+                        println!("source memories: {}", memory_ids.join(", "));
+                    }
+                    println!("\n{answer}");
+                }
+                CacheLookup::Grounding {
+                    memories,
+                    similarity,
+                } => {
+                    println!(
+                        "GROUNDING ({:.0}% match) — {} memory(ies):",
+                        similarity * 100.0,
+                        memories.len()
+                    );
+                    for m in memories {
+                        println!("  [{}] {}", m.id, m.headline);
+                    }
+                }
+                CacheLookup::Miss => println!("MISS"),
+            }
+        }
+        "put" => {
+            let q = query.ok_or_else(|| anyhow::anyhow!("`put` requires a query"))?;
+            let a = answer.ok_or_else(|| anyhow::anyhow!("`put` requires --answer"))?;
+            match brain.cache_put(&q, &a, source_ids, None, None)? {
+                Some(id) => println!("cached: {id}"),
+                None => println!("cache is disabled in config"),
+            }
+        }
+        "clear" => {
+            let n = brain.cache_clear(None)?;
+            println!("cleared {n} cache entr{}", if n == 1 { "y" } else { "ies" });
+        }
+        other => anyhow::bail!("unknown cache action `{other}` (get|put|clear)"),
+    }
     Ok(())
 }
 

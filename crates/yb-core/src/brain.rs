@@ -2,9 +2,10 @@
 //! vector search, compression, and conflict resolution into the high-level
 //! operations the CLI / MCP / daemon expose.
 
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use std::path::{Path, PathBuf};
 
+use crate::budget::{dynamic_allocate_budget, ExtractiveSummarizer};
 use crate::classify;
 use crate::compress::Compressor;
 use crate::config::Config;
@@ -12,11 +13,13 @@ use crate::conflict::{
     expiry_from, should_auto_resolve, Candidate, Conflict, ConflictAnalysis, ConflictRelation,
     ConflictState, Resolution, ResolutionAction, RuleEngine,
 };
-use crate::embed::{Embedder, HashEmbedder};
+use crate::embed::{cosine, Embedder, HashEmbedder};
 use crate::error::{Result, YbError};
+use crate::guardrail::{RuleValidator, ValidationReport, Validator};
 use crate::memory::{Edge, EdgeType, Memory, MemoryState, MemoryType, Scope, SourceType};
+use crate::rerank::{LexicalReranker, Reranker};
 use crate::search::{self, DetailLevel, RecallOutput, ScoredMemory};
-use crate::store::{Store, TimelineEvent};
+use crate::store::{CacheEntry, Store, TimelineEvent};
 use crate::vector::{FlatIndex, VectorIndex};
 
 /// Options for [`Brain::remember`]. Missing fields fall back to config defaults.
@@ -62,6 +65,56 @@ pub struct ResolveOutcome {
 pub struct RecallResult {
     pub output: RecallOutput,
     pub scored: Vec<ScoredMemory>,
+}
+
+/// Where a cache answer came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheSource {
+    /// A previously stored question/answer pair.
+    Cache,
+    /// Strongly-matching knowledge-base documents (answered directly).
+    Kb,
+}
+
+impl CacheSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CacheSource::Cache => "cache",
+            CacheSource::Kb => "kb",
+        }
+    }
+}
+
+/// Per-call overrides for the cache lookup thresholds. Any `None` field falls
+/// back to the `[cache]` config. Used for live tuning/research without editing
+/// config or restarting the server.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CacheOverrides {
+    /// Tier 1 (Q&A) similarity threshold.
+    pub similarity: Option<f32>,
+    /// Tier 2 (direct-from-KB) threshold.
+    pub kb_direct: Option<f32>,
+    /// Tier 3 (KB grounding) threshold.
+    pub kb_grounding: Option<f32>,
+}
+
+/// Result of a layered [`Brain::cache_get`] lookup.
+#[derive(Debug, Clone)]
+pub enum CacheLookup {
+    /// A ready answer (Tier 1 cache, or Tier 2 direct-from-KB).
+    Hit {
+        answer: String,
+        source: CacheSource,
+        memory_ids: Vec<String>,
+        similarity: f32,
+    },
+    /// Tier 3: KB matched moderately — return as grounding, still go to the LLM.
+    Grounding {
+        memories: Vec<Memory>,
+        similarity: f32,
+    },
+    /// No usable cache or KB match.
+    Miss,
 }
 
 /// Aggregate statistics about the brain.
@@ -384,6 +437,7 @@ impl Brain {
                     self.store.set_state(id, MemoryState::Superseded)?;
                     self.link(&new_memory.id, id, EdgeType::Supersedes, &new_memory.author)?;
                     self.index.remove(id);
+                    let _ = self.store.cache_invalidate_by_source(id);
                     self.store.timeline_add(
                         id,
                         "superseded",
@@ -410,6 +464,7 @@ impl Brain {
                     self.store.set_state(id, MemoryState::Superseded)?;
                     self.link(&merged.id, id, EdgeType::Supersedes, &merged.author)?;
                     self.index.remove(id);
+                    let _ = self.store.cache_invalidate_by_source(id);
                 }
                 Ok(Some(merged.id))
             }
@@ -458,6 +513,9 @@ impl Brain {
     }
 
     /// Search and retrieve memories, returning token-budgeted output.
+    ///
+    /// When `dynamic` is true, recalled memories are condensed with the dynamic
+    /// token budgeter; otherwise the static budget allocation is used.
     pub fn recall(
         &self,
         query: &str,
@@ -465,9 +523,23 @@ impl Brain {
         detail: DetailLevel,
         token_budget: usize,
         room: Option<&str>,
+        dynamic: bool,
     ) -> Result<RecallResult> {
+        // Resolve the effective token budget. A caller value of 0 means "use
+        // config": prefer the dynamic budgeter's [token_budget] max_tokens when
+        // set, otherwise fall back to [recall] max_tokens.
+        let token_budget = if token_budget > 0 {
+            token_budget
+        } else if self.config.token_budget.max_tokens > 0 {
+            self.config.token_budget.max_tokens
+        } else {
+            self.config.recall.max_tokens
+        };
+
         let qvec = self.embedder.embed(query);
-        let fetch = (limit * 4).max(10);
+        // Fetch a larger candidate pool so the reranker has room to work.
+        let factor = self.config.rerank.candidate_pool_factor.max(1);
+        let fetch = (limit * factor).max(10);
         let vector_ranked: Vec<String> = self
             .index
             .search(&qvec, fetch)
@@ -499,9 +571,18 @@ impl Brain {
         }
 
         let mut scored = search::rerank(scored_input);
+        // Lexical (BM25) rerank stage sharpens query relevance (v0.2).
+        if self.config.rerank.enabled {
+            let reranker = LexicalReranker::new(self.config.rerank.lexical_weight);
+            scored = reranker.rerank(query, scored);
+        }
         scored.truncate(limit);
 
-        let output = search::allocate_budget(&scored, token_budget, detail, 3);
+        let output = if dynamic {
+            dynamic_allocate_budget(&scored, token_budget, query, &ExtractiveSummarizer)
+        } else {
+            search::allocate_budget(&scored, token_budget, detail, 3)
+        };
 
         // Record access for what we actually returned.
         for id in &output.ids {
@@ -509,6 +590,185 @@ impl Brain {
         }
 
         Ok(RecallResult { output, scored })
+    }
+
+    // ---- semantic cache + guardrail (v0.2) -----------------------------
+
+    /// Layered cache lookup: Tier 1 conversational Q&A, Tier 2 direct answer
+    /// from strongly-matching KB documents, Tier 3 KB grounding, else miss.
+    pub fn cache_get(
+        &self,
+        query: &str,
+        room: Option<&str>,
+        overrides: CacheOverrides,
+    ) -> Result<CacheLookup> {
+        let cfg = &self.config.cache;
+        if !cfg.enabled {
+            return Ok(CacheLookup::Miss);
+        }
+        // Effective thresholds: per-call override wins over the [cache] config.
+        let t1 = overrides.similarity.unwrap_or(cfg.similarity_threshold);
+        let kb_direct = overrides.kb_direct.unwrap_or(cfg.kb_direct_threshold);
+        let kb_grounding = overrides.kb_grounding.unwrap_or(cfg.kb_grounding_threshold);
+        let qvec = self.embedder.embed(query);
+
+        // Tier 1: conversational Q&A cache.
+        let entries = self.store.cache_entries(room)?;
+        let mut best: Option<(&CacheEntry, f32)> = None;
+        for e in &entries {
+            if e.query_embedding.is_empty() {
+                continue;
+            }
+            let sim = cosine(&qvec, &e.query_embedding);
+            if best.map(|(_, b)| sim > b).unwrap_or(true) {
+                best = Some((e, sim));
+            }
+        }
+        if let Some((entry, sim)) = best {
+            if sim >= t1 {
+                let _ = self.store.cache_touch(&entry.id);
+                return Ok(CacheLookup::Hit {
+                    answer: entry.answer.clone(),
+                    source: CacheSource::Cache,
+                    memory_ids: entry.source_ids.clone(),
+                    similarity: sim,
+                });
+            }
+        }
+
+        if !cfg.use_kb {
+            return Ok(CacheLookup::Miss);
+        }
+
+        // Tiers 2/3: consult the knowledge base directly by vector similarity.
+        let top_k = self.config.guardrail.evidence_top_k.max(3);
+        let mut kb: Vec<(Memory, f32)> = Vec::new();
+        for (id, sim) in self.index.search(&qvec, top_k) {
+            if let Some(m) = self.store.get_memory(&id)? {
+                if matches!(m.state, MemoryState::Archived | MemoryState::Superseded) {
+                    continue;
+                }
+                if m.confidence < self.config.search.min_confidence {
+                    continue;
+                }
+                if let Some(r) = room {
+                    if m.room.as_deref() != Some(r) {
+                        continue;
+                    }
+                }
+                kb.push((m, sim));
+            }
+        }
+        let top_sim = kb.first().map(|(_, s)| *s).unwrap_or(0.0);
+
+        // Tier 2: strong match -> answer directly from KB documents.
+        let direct: Vec<&(Memory, f32)> = kb.iter().filter(|(_, s)| *s >= kb_direct).collect();
+        if !direct.is_empty() {
+            let answer = direct
+                .iter()
+                .map(|(m, _)| m.content.clone())
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            let memory_ids = direct.iter().map(|(m, _)| m.id.clone()).collect();
+            return Ok(CacheLookup::Hit {
+                answer,
+                source: CacheSource::Kb,
+                memory_ids,
+                similarity: top_sim,
+            });
+        }
+
+        // Tier 3: moderate match -> return as grounding context.
+        let grounding: Vec<Memory> = kb
+            .into_iter()
+            .filter(|(_, s)| *s >= kb_grounding)
+            .map(|(m, _)| m)
+            .collect();
+        if !grounding.is_empty() {
+            return Ok(CacheLookup::Grounding {
+                memories: grounding,
+                similarity: top_sim,
+            });
+        }
+
+        Ok(CacheLookup::Miss)
+    }
+
+    /// Store a query/answer pair, tagging the KB memories that grounded it so the
+    /// entry can be auto-invalidated when a source memory changes.
+    pub fn cache_put(
+        &self,
+        query: &str,
+        answer: &str,
+        source_ids: Vec<String>,
+        room: Option<String>,
+        ttl_override: Option<i64>,
+    ) -> Result<Option<String>> {
+        if !self.config.cache.enabled {
+            return Ok(None);
+        }
+        let now = Utc::now();
+        let ttl = ttl_override.unwrap_or(self.config.cache.ttl_secs);
+        let expires_at = if ttl > 0 {
+            Some(now + Duration::seconds(ttl))
+        } else {
+            None
+        };
+        let entry = CacheEntry {
+            id: ulid::Ulid::new().to_string(),
+            query: query.to_string(),
+            query_embedding: self.embedder.embed(query),
+            answer: answer.to_string(),
+            source_ids,
+            room,
+            created_at: now,
+            expires_at,
+            hits: 0,
+        };
+        self.store.cache_put(&entry)?;
+        let _ = self.store.cache_purge_expired();
+        let _ = self.store.cache_evict_to(self.config.cache.max_entries);
+        Ok(Some(entry.id))
+    }
+
+    /// Clear cached answers (optionally scoped to a room). Returns rows removed.
+    pub fn cache_clear(&self, room: Option<&str>) -> Result<usize> {
+        self.store.cache_clear(room)
+    }
+
+    /// Validate a drafted answer against the knowledge base (anti-hallucination).
+    ///
+    /// Evidence is taken from `source_ids` when given, else gathered by recalling
+    /// the knowledge base for `query` (falling back to the answer text).
+    pub fn validate(
+        &self,
+        answer: &str,
+        query: Option<&str>,
+        source_ids: Option<Vec<String>>,
+        threshold_override: Option<f32>,
+    ) -> Result<ValidationReport> {
+        let evidence: Vec<Memory> = match source_ids {
+            Some(ids) => {
+                let mut out = Vec::new();
+                for id in ids {
+                    if let Some(m) = self.store.get_memory(&id)? {
+                        out.push(m);
+                    }
+                }
+                out
+            }
+            None => {
+                let q = query.unwrap_or(answer);
+                let top_k = self.config.guardrail.evidence_top_k.max(3);
+                self.recall(q, top_k, DetailLevel::Full, usize::MAX, None, false)?
+                    .scored
+                    .into_iter()
+                    .map(|s| s.memory)
+                    .collect()
+            }
+        };
+        let threshold = threshold_override.unwrap_or(self.config.guardrail.support_threshold);
+        Ok(RuleValidator::new(threshold).validate(answer, &evidence))
     }
 
     // ---- simple accessors / management ---------------------------------
@@ -524,6 +784,8 @@ impl Brain {
     pub fn forget(&mut self, id: &str) -> Result<()> {
         self.store.set_state(id, MemoryState::Archived)?;
         self.index.remove(id);
+        // Cached answers grounded on this memory are now stale.
+        let _ = self.store.cache_invalidate_by_source(id);
         self.store
             .timeline_add(id, "archived", None, &self.config.general.author)?;
         Ok(())
@@ -560,6 +822,8 @@ impl Brain {
         m.confidence = m.consensus_confidence();
         m.updated_at = Utc::now();
         self.store.update_memory(&m)?;
+        // A disputed memory should no longer back a cached answer.
+        let _ = self.store.cache_invalidate_by_source(id);
         self.store
             .timeline_add(id, "disputed", Some(reason), author)?;
         Ok(())
@@ -704,6 +968,7 @@ mod tests {
                 DetailLevel::Summary,
                 200,
                 None,
+                false,
             )
             .unwrap();
         assert!(!res.output.lines.is_empty(), "recall returned nothing");
